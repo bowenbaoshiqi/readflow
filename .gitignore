@@ -13,8 +13,13 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/*.sqlite
+data/covers/
+data/screenshots/
 books-library/*
 !books-library/.gitkeep
+
+# Claude 本地设置(机器特定)
+.claude/settings.local.json
 
 # 环境变量/密钥
 .env
