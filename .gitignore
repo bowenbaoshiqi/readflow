@@ -1,0 +1,30 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# uv
+.uv-cache/
+
+# 项目数据(本地,不入库)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite
+books-library/*
+!books-library/.gitkeep
+
+# 环境变量/密钥
+.env
+.env.local
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# 临时
+*.log
+tmp/
