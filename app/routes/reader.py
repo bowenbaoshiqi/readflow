@@ -53,8 +53,40 @@ def reader_page(book_id: int, request: Request):
   <span id="title">{row['title']}</span>
   <span id="progress">0%</span>
   <button id="toc-btn" title="目录">☰</button>
+  <button id="typo-btn" title="排版">文</button>
 </div>
 <div id="viewer" data-book-id="{book_id}" data-base="{base}"></div>
+<aside id="typo-panel" hidden>
+  <div class="typo-head">
+    <span class="typo-title">排版</span>
+    <button id="typo-close" title="收起">✕</button>
+  </div>
+  <div class="typo-body">
+    <label class="typo-row">
+      <span class="typo-label">字号</span>
+      <input id="typo-size" type="range" min="12" max="28" step="1" value="16">
+      <span class="typo-val" id="typo-size-val">16</span>
+      <div id="typo-size-preview">山色空蒙雨亦奇</div>
+    </label>
+    <label class="typo-row">
+      <span class="typo-label">行距</span>
+      <input id="typo-spacing" type="range" min="1.2" max="2.8" step="0.1" value="1.6">
+      <span class="typo-val" id="typo-spacing-val">1.6</span>
+    </label>
+    <div class="typo-row">
+      <span class="typo-label">边距</span>
+      <div class="typo-chips" id="typo-margin-chips">
+        <button data-margin="narrow">窄</button>
+        <button data-margin="medium">中</button>
+        <button data-margin="wide">宽</button>
+      </div>
+    </div>
+    <div class="typo-row">
+      <span class="typo-label">字体</span>
+      <div class="typo-chips" id="typo-font-chips"></div>
+    </div>
+  </div>
+</aside>
 <div id="bottom-bar" hidden>
   <button data-act="highlight">划线</button>
   <button data-act="copy">复制</button>

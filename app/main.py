@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, ingest, watcher
-from .routes import library, reader
+from .routes import library, reader, settings
 
 LIBRARY_DIR = Path(__file__).resolve().parent.parent / "books-library"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -32,6 +32,7 @@ app = FastAPI(title="书舟", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(library.router)
 app.include_router(reader.router)
+app.include_router(settings.router)
 
 
 @app.get("/", response_class=HTMLResponse)

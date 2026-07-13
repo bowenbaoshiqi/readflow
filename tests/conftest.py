@@ -37,12 +37,20 @@ def tmp_library(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def isolate_db(monkeypatch, tmp_path):
-    """每个测试自动获得独立临时数据库+封面目录,互不污染。"""
+def isolate_db(request, monkeypatch, tmp_path):
+    """每个测试自动获得独立临时数据库+封面目录,互不污染。
+
+    e2e 测试(test_reader_typography)自己起 uvicorn 服务并管理 DB,
+    不参与此隔离(否则 function-scope 改 DB_PATH 会跟服务线程冲突)。
+    """
+    if request.module and "test_reader_typography" in (request.module.__name__ or ""):
+        yield
+        return
     from app import db, ingest
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(ingest, "COVER_DIR", tmp_path / "covers")
     db.init_db()
+    yield
 
 
 def _first_sample() -> Path:
