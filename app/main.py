@@ -5,17 +5,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, ingest, watcher
+from .config import LIBRARY_DIR, STATIC_DIR
 from .routes import library, reader, settings
-
-LIBRARY_DIR = Path(__file__).resolve().parent.parent / "books-library"
-STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 @asynccontextmanager
@@ -28,12 +25,22 @@ async def lifespan(app: FastAPI):
     w.stop()
 
 
-app = FastAPI(title="书舟", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="书舟", version="0.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(library.router)
 app.include_router(library.pages)
 app.include_router(reader.router)
 app.include_router(settings.router)
+
+
+@app.get("/api/health")
+def health():
+    """健康检查:Docker HEALTHCHECK + 外部探活用。
+
+    不查 DB(watcher/ingest 异常不应让整个服务判死);
+    只确认进程存活、能响应 HTTP。
+    """
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)

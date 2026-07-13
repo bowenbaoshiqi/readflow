@@ -13,9 +13,8 @@ import ebooklib
 from ebooklib import epub
 
 from . import db
+from .config import COVER_DIR
 from .db import db as db_tx
-
-COVER_DIR = Path(__file__).resolve().parent.parent / "data" / "covers"
 
 
 def file_hash(path: Path, buf_size: int = 1 << 20) -> str:

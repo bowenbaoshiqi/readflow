@@ -7,6 +7,16 @@ from app import ingest
 from tests.conftest import _first_sample, _second_sample
 
 
+class TestHealth:
+    """/api/health 健康检查"""
+
+    def test_health_returns_ok(self, client):
+        """health 端点返回 {"ok":true},供 Docker HEALTHCHECK 探活。"""
+        r = client.get("/api/health")
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+
+
 class TestLibraryAPI:
     """GET /api/library 书库列表"""
 
@@ -189,6 +199,68 @@ class TestReaderPage:
         assert 'data-base=' in r.text
 
 
+class TestHtmlReaderPage:
+    """/read-html/{id} Kindle 友好的服务端渲染 HTML 阅读页。"""
+
+    def test_html_reader_200(self, client):
+        """存在的书返回 HTML 阅读页。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read-html/{bid}")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+
+    def test_html_reader_404(self, client):
+        """不存在的书返回 404。"""
+        r = client.get("/read-html/99999")
+        assert r.status_code == 404
+
+    def test_html_reader_has_chapter_content(self, client):
+        """页面应含章节正文(从 epub spine 提取),不是空白。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read-html/{bid}")
+        # #content 容器 + .text 内层应有非空正文
+        assert 'id="content"' in r.text
+        assert 'class="text"' in r.text
+        # 提取 .text 内纯文本,应有一定长度(跳过空白扉页后取到正文章节)
+        import re
+        m = re.search(r'<div class="text">(.*?)</div>\s*<div id="tap', r.text, re.S)
+        assert m, "应找到 .text 内容区"
+        text = re.sub(r"<[^>]+>", "", m.group(1)).strip()
+        assert len(text) > 20, f"章节正文应非空,实际 {len(text)} 字"
+
+    def test_html_reader_has_font_and_pagination(self, client):
+        """页面应含霞鹜文楷字体引用 + columns 分栏 + 翻页点击层。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read-html/{bid}")
+        assert "lxgw.ttf" in r.text, "应引用霞鹜文楷字体"
+        assert "column-width" in r.text or "columnWidth" in r.text, "应用 CSS columns 分栏"
+        assert 'id="tap-left"' in r.text and 'id="tap-right"' in r.text, "应有左右翻页点击层"
+
+    def test_html_reader_chapter_param(self, client):
+        """?ch=N 翻到不同章节:ch=0 和 ch=大值 应返回不同内容。"""
+        bid = ingest.ingest_file(_first_sample())
+        r0 = client.get(f"/read-html/{bid}?ch=0")
+        r_big = client.get(f"/read-html/{bid}?ch=9999")  # 越界 → 回落到最后一个有内容章节
+        assert r0.status_code == 200
+        assert r_big.status_code == 200
+        # 两者进度百分比应不同(除非全书只有一章)
+        import re
+        def pct(text):
+            m = re.search(r'id="pct">(\d+)%', text)
+            return int(m.group(1)) if m else -1
+        # 大 ch 落到最后一章,进度应 >= ch=0 的进度
+        assert pct(r_big.text) >= pct(r0.text)
+
+    def test_html_reader_prev_ch_link_none_for_first_chapter(self, client):
+        """第一章的"上一章"链接应是禁用态(href=# + 灰色)。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read-html/{bid}?ch=0")
+        # 第一章 prev_ch 为 None,链接 href 应是 # 或带灰色样式
+        assert 'id="prev-ch-link"' in r.text
+        # 灰色样式表示禁用
+        assert "color:#999" in r.text or 'href="#"' in r.text
+
+
 class TestEpubFileService:
     """GET /api/books/{id}/file"""
 
@@ -326,3 +398,117 @@ class TestHighlightAPI:
             "spine_index": 0, "start_cfi": "a", "end_cfi": "b", "text": "x",
         })
         assert r.status_code == 404
+
+
+class TestDeleteBook:
+    """DELETE /api/library/{book_id} 删书 + 移回收站。
+
+    方案 C:删 DB 记录(CASCADE 清进度/划线)+ 原文件移到
+    books-library/.trash/{file_hash}_{原名} + 删封面文件。
+    watcher 排除 .trash/ 防重新入库(见 test_watcher)。
+    """
+
+    def _ingest_copy(self, client, tmp_library, sample=None):
+        """复制样本 epub 到 tmp_library 再入库,返回 (bid, 副本路径)。
+
+        绝不 ingest 真实 books-library/ 里的原文件——删书测试会移走文件,
+        碰原文件会污染其他测试。
+        """
+        from tests.conftest import _first_sample
+        src = sample or _first_sample()
+        copy = tmp_library / f"copy_{src.name}"
+        copy.write_bytes(src.read_bytes())
+        bid = ingest.ingest_file(copy)
+        return bid, copy
+
+    def test_delete_removes_db_row(self, client, tmp_library):
+        """删除后 books 表无该行。"""
+        bid, _ = self._ingest_copy(client, tmp_library)
+        r = client.delete(f"/api/library/{bid}")
+        assert r.status_code == 200
+        from app import db
+        with db.get_conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM books WHERE id=?", (bid,)).fetchone()[0]
+        assert n == 0
+
+    def test_delete_cascades_progress_and_highlights(self, client, tmp_library):
+        """删书级联清 reading_progress + highlights(ON DELETE CASCADE)。"""
+        bid, _ = self._ingest_copy(client, tmp_library)
+        # 造进度 + 划线
+        client.put(f"/api/books/{bid}/progress", json={
+            "spine_index": 2, "cfi": "x", "percent": 0.3,
+        })
+        client.post(f"/api/books/{bid}/highlights", json={
+            "spine_index": 0, "start_cfi": "a", "end_cfi": "b", "text": "x",
+        })
+        client.delete(f"/api/library/{bid}")
+        from app import db
+        with db.get_conn() as conn:
+            p = conn.execute("SELECT COUNT(*) FROM reading_progress WHERE book_id=?", (bid,)).fetchone()[0]
+            h = conn.execute("SELECT COUNT(*) FROM highlights WHERE book_id=?", (bid,)).fetchone()[0]
+        assert p == 0 and h == 0
+
+    def test_delete_moves_original_file_to_trash(self, client, tmp_library):
+        """原 epub 文件移到 .trash/,原位置消失。"""
+        bid, copy = self._ingest_copy(client, tmp_library)
+        assert copy.is_file(), "入库前副本应存在"
+        client.delete(f"/api/library/{bid}")
+        assert not copy.is_file(), "原位置文件应已被移走"
+        trash = tmp_library / ".trash"
+        assert trash.is_dir(), ".trash/ 目录应存在"
+        # 回收站里应有一个文件(原名保留)
+        trashed = list(trash.glob("*"))
+        assert len(trashed) == 1, f"回收站应有 1 个文件,实际 {len(trashed)}"
+        assert copy.name in trashed[0].name, "回收站文件应保留原文件名"
+
+    def test_delete_removes_cover_file(self, client, tmp_library):
+        """删书后封面 {file_hash}.jpg 从 data/covers/ 删除(不留孤儿)。"""
+        from tests.conftest import _sample_epub
+        from app import db, ingest
+        bid, _ = self._ingest_copy(client, tmp_library, _sample_epub("钦探"))
+        with db.get_conn() as conn:
+            row = conn.execute("SELECT file_hash, cover_path FROM books WHERE id=?", (bid,)).fetchone()
+        if not row["cover_path"]:
+            return  # 该样本无封面,无法测删封面,跳过
+        cover_file = ingest.COVER_DIR / f"{row['file_hash']}.jpg"
+        assert cover_file.is_file(), "删前封面文件应存在"
+        client.delete(f"/api/library/{bid}")
+        assert not cover_file.is_file(), "删书后封面文件应被删除"
+
+    def test_delete_nonexistent_returns_404(self, client):
+        """删不存在的 book_id 返回 404,不是 500。"""
+        r = client.delete("/api/library/99999")
+        assert r.status_code == 404
+
+    def test_delete_idempotent_second_call_404(self, client, tmp_library):
+        """删两次:第二次应 404(已删,不在 DB)。"""
+        bid, _ = self._ingest_copy(client, tmp_library)
+        r1 = client.delete(f"/api/library/{bid}")
+        assert r1.status_code == 200
+        r2 = client.delete(f"/api/library/{bid}")
+        assert r2.status_code == 404
+
+    def test_delete_trash_uses_file_hash_prefix_avoids_collision(self, client, tmp_library):
+        """回收站已有同名文件时不覆盖:用 {file_hash}_ 前缀保证不撞。
+
+        场景:两本不同来源但同名"copy_x.epub"先后删除,回收站应各有保留。
+        (实际 file_hash 不同 → 前缀不同 → 文件名不同 → 不覆盖)
+        """
+        from tests.conftest import _first_sample, _second_sample
+        # 两本不同内容的书,都叫 copy_same.epub,先后删
+        s1 = tmp_library / "copy_same.epub"
+        s1.write_bytes(_first_sample().read_bytes())
+        bid1 = ingest.ingest_file(s1)
+        # 第二本:用不同内容但同名文件(放子目录避免同目录撞名)
+        sub = tmp_library / "sub"
+        sub.mkdir()
+        s2 = sub / "copy_same.epub"
+        s2.write_bytes(_second_sample().read_bytes())
+        bid2 = ingest.ingest_file(s2)
+
+        client.delete(f"/api/library/{bid1}")
+        client.delete(f"/api/library/{bid2}")
+
+        trash = tmp_library / ".trash"
+        trashed = list(trash.glob("*"))
+        assert len(trashed) == 2, f"回收站应保留两本同名书,实际 {len(trashed)}"

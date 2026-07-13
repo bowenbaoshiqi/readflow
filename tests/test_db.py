@@ -62,6 +62,16 @@ class TestConnection:
         assert fk == 1
         conn.close()
 
+    def test_get_conn_sets_busy_timeout(self, tmp_path, monkeypatch):
+        """busy_timeout 已设:多设备并发写时自动重试而非立即 locked。"""
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "busy.db")
+        db.init_db()
+        conn = db.get_conn()
+        # PRAGMA busy_timeout 返回毫秒值
+        bt = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert bt == 5000
+        conn.close()
+
 
 class TestTransactionContext:
     """事务上下文 db()"""

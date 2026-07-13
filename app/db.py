@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "readflow.db"
+from .config import DB_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS books (
@@ -91,11 +90,17 @@ def _migrate_add_metadata_columns(conn) -> None:
 
 
 def get_conn() -> sqlite3.Connection:
-    """返回启用 WAL + 外键的连接。调用方用 with 管理事务。"""
+    """返回启用 WAL + 外键 + busy_timeout 的连接。调用方用 with 管理事务。
+
+    busy_timeout:v0.3 跨设备后,手机存进度与 watcher 入库可能并发写。
+    WAL 只让读不阻塞写,并发写仍会撞 database is locked;
+    busy_timeout=5s 让写互自动重试,而非立即报错(单用户量级下足够)。
+    """
     conn = sqlite3.connect(str(DB_PATH), detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
