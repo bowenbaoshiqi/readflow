@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from pathlib import Path
 
@@ -33,11 +34,16 @@ def detect_format(path: Path) -> str:
 
 
 def _extract_metadata(epub_path: Path) -> dict:
-    """用 ebooklib 从 epub 提取书名/作者/封面/规模。
+    """用 ebooklib 从 epub 提取书名/作者/封面/规模 + 外部元数据兜底字段。
 
+    v0.2 新增:publisher/publish_date/description/isbn —— 这些是 epub 内嵌的
+    本地零成本数据,作为 Google Books 查询不到时的兜底,也作为 ISBN 精确查询的输入。
     ebooklib 读取异常时返回空字段,不阻断入库(降级为可用文件名)。
     """
-    meta: dict = {"title": None, "author": None, "cover_rel": None, "total_chars": 0}
+    meta: dict = {
+        "title": None, "author": None, "cover_rel": None, "total_chars": 0,
+        "publisher": None, "publish_date": None, "description": None, "isbn": None,
+    }
     try:
         book = epub.read_epub(str(epub_path), options={"ignore_ncx": True})
     except Exception:
@@ -51,6 +57,32 @@ def _extract_metadata(epub_path: Path) -> dict:
     author = book.get_metadata("DC", "creator")
     if author:
         meta["author"] = author[0][0]
+
+    # 出版社/出版日期/简介(epub 内嵌兜底字段)
+    publisher = book.get_metadata("DC", "publisher")
+    if publisher:
+        meta["publisher"] = publisher[0][0]
+    date = book.get_metadata("DC", "date")
+    if date:
+        # date 可能带 attrs/event,取值;格式如 "2020-08-12T00:00:00+00:00" 取日期部分
+        raw_date = str(date[0][0])[:10]
+        meta["publish_date"] = raw_date or None
+    desc = book.get_metadata("DC", "description")
+    if desc:
+        raw_desc = str(desc[0][0])
+        # epub description 常是 HTML,去标签存纯文本
+        plain = re.sub(r"<[^>]+>", "", raw_desc).strip()
+        meta["description"] = plain or None
+
+    # ISBN:遍历 identifier,scheme 含 isbn 或值以 isbn: 开头
+    for ident_val, attrs in book.get_metadata("DC", "identifier") or []:
+        scheme = ""
+        if attrs:
+            scheme = str(attrs.get("{http://www.idpf.org/2007/opf}scheme") or "").lower()
+        val = str(ident_val)
+        if "isbn" in scheme or val.lower().startswith("isbn:"):
+            meta["isbn"] = re.sub(r"^isbn:", "", val, flags=re.I)
+            break
 
     # 封面:ebooklib 的 get_item_with_id('cover') 不稳,遍历 images 找 cover-xhtml-image
     for item in book.get_items_of_type(ebooklib.ITEM_COVER):
@@ -67,10 +99,8 @@ def _extract_metadata(epub_path: Path) -> dict:
     total = 0
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
         try:
-            from ebooklib.utils import debug
             content = item.get_content().decode("utf-8", errors="ignore")
             # 去标签粗估
-            import re
             total += len(re.sub(r"<[^>]+>", "", content))
         except Exception:
             continue
@@ -79,8 +109,14 @@ def _extract_metadata(epub_path: Path) -> dict:
     return meta
 
 
-def _save_cover(epub_path: Path, cover_rel: str | None, book_id: int) -> str | None:
-    """从 epub 提取封面图存到 data/covers/{book_id}.jpg,返回相对路径。"""
+def _save_cover(epub_path: Path, cover_rel: str | None, file_hash: str) -> str | None:
+    """从 epub 提取封面图存到 data/covers/{file_hash}.jpg,返回相对路径。
+
+    用 file_hash 命名而非 book_id:book_id 会被复用(删书后自增回退),
+    用它命名会在并发入库/重入库时串图(4.jpg/5.jpg bug)。
+    file_hash 由内容决定、入库即有、稳定唯一 → 同书重入库封面文件复用,
+    并发写也是同一文件(内容相同),不会串到别的书。
+    """
     if not cover_rel:
         return None
     try:
@@ -89,7 +125,7 @@ def _save_cover(epub_path: Path, cover_rel: str | None, book_id: int) -> str | N
         if item is None:
             return None
         COVER_DIR.mkdir(parents=True, exist_ok=True)
-        out = COVER_DIR / f"{book_id}.jpg"
+        out = COVER_DIR / f"{file_hash}.jpg"
         out.write_bytes(item.get_content())
         return str(out.relative_to(out.parent.parent.parent))  # data/covers/x.jpg
     except Exception:
@@ -135,11 +171,13 @@ def ingest_file(path: Path) -> int | None:
 
     # 原子去重+插入:冲突时只刷新 original_path(处理移动/重命名),不覆盖已有元数据/封面。
     # 返回 id;并附带 xmax 判断是否为本次新建(SQLite 无 xmax,改用先查再定)。
+    # v0.2:同时写入 epub 内嵌的 publisher/date/description/isbn,作为外部元数据兜底 + 查询输入。
     with db_tx() as conn:
         row = conn.execute(
             """INSERT INTO books(file_hash,title,author,cover_path,original_path,
-               epub_path,format,total_chars,ingest_status)
-               VALUES(?,?,?,?,?,?,?,?, 'ready')
+               epub_path,format,total_chars,publisher,publish_date,summary,isbn,
+               ingest_status)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'ready')
                ON CONFLICT(file_hash) DO UPDATE SET
                  original_path=excluded.original_path,
                  updated_at=datetime('now')
@@ -153,6 +191,10 @@ def ingest_file(path: Path) -> int | None:
                 str(path),  # epub 原文件即渲染文件
                 fmt,
                 meta["total_chars"],
+                meta["publisher"],
+                meta["publish_date"],
+                meta["description"],
+                meta["isbn"],
             ),
         ).fetchone()
         book_id = row["id"]
@@ -163,11 +205,36 @@ def ingest_file(path: Path) -> int | None:
 
     # 仅新建或原本无封面时回填,避免重复提取/覆盖已存在封面
     if not existed["cover_path"]:
-        cover_path = _save_cover(path, meta["cover_rel"], book_id)
+        cover_path = _save_cover(path, meta["cover_rel"], fhash)
         if cover_path:
             with db_tx() as conn:
                 conn.execute(
                     "UPDATE books SET cover_path=? WHERE id=?", (cover_path, book_id)
                 )
 
+    # 入库后异步补全外部元数据(Google Books)。
+    # 失败不影响入库:阅读/书库照常,_enrich_async 内部吞异常。
+    _enrich_async(book_id)
+
     return book_id
+
+
+def _enrich_async(book_id: int) -> None:
+    """后台线程补全外部元数据,不阻塞入库。
+
+    单用户、入库即触发:用 daemon 线程,不引 APScheduler(那是定时任务用的)。
+    enrich 内部已对 provider 异常/无结果降级,这里再加一层兜底,
+    确保任何异常都不影响入库链路。
+    """
+    import threading
+    from . import metadata
+
+    def _worker():
+        try:
+            metadata.enrich_book(book_id)
+        except Exception:
+            # 兜底:enrich 自身已降级,这里只防线程内未捕获异常冒泡
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
