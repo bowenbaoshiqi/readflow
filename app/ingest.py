@@ -186,7 +186,7 @@ def ingest_file(path: Path) -> int | None:
                 fhash,
                 title,
                 meta["author"],
-                None,  # cover 先占位,用 book_id 命名,下面回填
+                None,  # cover 先占位 NULL,下面用 file_hash 命名回填
                 str(path),
                 str(path),  # epub 原文件即渲染文件
                 fmt,
