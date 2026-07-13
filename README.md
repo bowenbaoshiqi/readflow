@@ -1,53 +1,57 @@
-# 书舟 ReadFlow
+# 书舟 ReadFlow v0.1
 
-基于 NAS 的私人阅读服务。当前 v0.1:监听入库 + 在线阅读 epub + 划线 + 阅读进度。
+私人 NAS 阅读服务。把你的电子书放在自己硬盘里，用浏览器阅读、划线、记录进度。
 
-## 当前版本 (v0.1)
+> 当前版本 v0.1：支持 epub 格式，包含书库首页、阅读器、划线、阅读进度持久化。
 
-- ✅ 监听 `books-library/` 目录,epub 新文件自动入库(文件 hash 去重)
-- ✅ ebooklib 提取书名/作者/封面
-- ✅ foliate-js 渲染 epub(CFI 定位、分页、暗色模式)
-- ✅ 阅读进度持久化(spine_index + CFI,跨设备精准)
-- ✅ 选中文字划线(CFI 锚点,重排版不错位)
-- 🚧 后续版本:格式转换(mobi/azw3/pdf/txt→epub)、外部元数据、全文搜索、每日总结、推荐、AI 解释/翻译
+---
 
-## 开发环境
+## 功能
+
+- **书库监听器**：把 epub 文件放入 `books-library/` 目录，自动入库
+- **在线阅读器**：基于 [foliate-js](https://github.com/johnfactotum/foliate-js) 渲染 epub，支持翻页/目录
+- **划线与复制**：选中文字划线，划线数据持久化；支持复制选中文本
+- **阅读进度**：自动保存章节位置与进度百分比，跨会话/跨设备恢复
+- **单文件数据库**：所有数据在 `data/readflow.db`，方便备份
+
+## 快速开始
 
 ```bash
-# 安装依赖(虚拟环境在 .venv/,不污染系统)
-uv sync
-
-# 启动开发服务器
-uv run uvicorn app.main:app --reload
-
-# 打开 http://localhost:8000
-# 把 epub 文件放入 books-library/ 即自动入库
+uv sync                          # 安装依赖到 .venv/
+uv run uvicorn app.main:app      # 启动服务
 ```
 
-## 架构
+浏览器打开 `http://localhost:8765`，把 epub 放进 `books-library/` 即可开始阅读。
 
-| 层 | 选型 |
-|---|---|
-| 后端 | Python FastAPI + SQLite |
-| 文件监听 | watchdog + 定时全量扫描兜底 |
-| epub 解析 | ebooklib |
-| 阅读器前端 | foliate-js (MIT, git submodule) |
+详细用户指南请见：[docs/getting-started.md](docs/getting-started.md)
 
-## 目录
+## 技术栈
 
-```
-app/           后端(FastAPI)
-  main.py      入口
-  db.py        SQLite schema
-  ingest.py    ebooklib 解析 + 去重
-  watcher.py   watchdog 监听
-  routes/      API 路由
-  static/      前端(foliate-js + reader.js + css)
-books-library/ 书库目录(放 epub)
-data/          sqlite db + 封面(本地,不入库)
+- 后端：Python FastAPI + SQLite
+- 阅读器前端：[foliate-js](https://github.com/johnfactotum/foliate-js)（MIT）
+- epub 解析：ebooklib
+- 文件监听：watchdog
+- 虚拟环境：uv
+
+## 测试
+
+```bash
+uv run pytest tests/ --ignore=tests/test_reader_e2e.py
 ```
 
-## 安全
+当前有 65 个后端/接口单元测试，全部通过。
 
-- ebooklib 有未修路径遍历漏洞,只解析自己放入书库的文件
-- epub 可含脚本内容,foliate-js 要求配 CSP(自托管可信任书源)
+## 后续计划
+
+- v0.2：格式转换（mobi/azw3/pdf/txt → epub）、全文搜索、外部元数据补全
+- 更远：AI 每日总结、推荐、选中文字 AI 解释/翻译
+
+## 安全提示
+
+- 本项目为单用户自托管设计，默认仅监听本机（`127.0.0.1`）
+- 仅在声明的可信内网范围开放访问
+- ebooklib 有未公开修复的路径遍历安全漏洞，只应解析你自己放入书库的文件
+
+## License
+
+书舟自身代码保留所有权利，暂未指定开源协议。使用的第三方库遵循各自许可证。
