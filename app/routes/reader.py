@@ -44,17 +44,26 @@ def reader_page(book_id: int, request: Request):
   <span id="progress">0%</span>
   <button id="toc-btn" title="目录">☰</button>
 </div>
-<div id="viewer"></div>
+<div id="viewer" data-book-id="{book_id}" data-base="{base}"></div>
 <div id="bottom-bar" hidden>
   <button data-act="highlight">划线</button>
   <button data-act="copy">复制</button>
 </div>
 
-<script type="module">
-  import './foliate-js/view.js'
-  const BOOK_ID = {book_id};
-  const BASE = {base!r};
-  window.READFLOW = {{ BOOK_ID, BASE }};
+<!-- 全局错误捕获:把异常显示到页面,方便不用 devtools 也能看到 -->
+<script>
+window.addEventListener('error', e => {{
+  const d = document.createElement('pre');
+  d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#c00;color:#fff;padding:12px;font-size:12px;white-space:pre-wrap;z-index:999';
+  d.textContent = '[error] ' + (e.error?.stack || e.message);
+  document.body.append(d);
+}});
+window.addEventListener('unhandledrejection', e => {{
+  const d = document.createElement('pre');
+  d.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#c00;color:#fff;padding:12px;font-size:12px;white-space:pre-wrap;z-index:999';
+  d.textContent = '[promise] ' + (e.reason?.stack || e.reason);
+  document.body.append(d);
+}});
 </script>
 <script type="module" src="{base}/static/reader.js"></script>
 </body>

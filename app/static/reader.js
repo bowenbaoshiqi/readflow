@@ -1,33 +1,39 @@
 /* 书舟 - 阅读器前端(foliate-js)
  * API 参考 foliate-js demo reader.js。foliate-js 无构建步骤,ES module 直接 import。
+ * 配置从 #viewer 的 data-* 属性读取,避免多 module script 的执行顺序问题。
  */
 import { Overlayer } from './foliate-js/overlayer.js'
 import './foliate-js/view.js'
 
-const { BOOK_ID, BASE } = window.READFLOW
+const viewer = document.getElementById('viewer')
+const BOOK_ID = viewer.dataset.bookId
+const BASE = viewer.dataset.base
 
 const view = document.createElement('foliate-view')
-document.getElementById('viewer').append(view)
+viewer.append(view)
 
 let currentLocation = null  // relocate 事件的 detail
 
 // ---- 打开书籍 + 恢复进度 + 渲染已有划线 ----
 async function init() {
+  console.log('[readflow] opening book', BOOK_ID, 'from', BASE)
   await view.open(`${BASE}/api/books/${BOOK_ID}/file`)
+  console.log('[readflow] book opened, sections:', view.book?.sections?.length)
 
   // 恢复阅读位置(优先 CFI)
   const p = await fetch(`${BASE}/api/books/${BOOK_ID}/progress`).then(r => r.json())
   if (p.cfi) {
-    try { await view.goTo(p.cfi) } catch { /* CFI 可能失效,忽略 */ }
+    try { await view.goTo(p.cfi); console.log('[readflow] restored to', p.cfi) }
+    catch (e) { console.warn('[readflow] restore failed', e) }
   }
 
   // 加载已有划线
   const hs = await fetch(`${BASE}/api/books/${BOOK_ID}/highlights`).then(r => r.json())
   for (const h of hs) {
-    try {
-      await view.addAnnotation({ value: h.start_cfi, color: h.color, note: h.text })
-    } catch { /* 某些 CFI 可能因书籍变更失效,忽略单条 */ }
+    try { await view.addAnnotation({ value: h.start_cfi, color: h.color, note: h.text }) }
+    catch (e) { console.warn('[readflow] highlight load failed', e) }
   }
+  console.log('[readflow] init done')
 }
 
 // ---- 划线绘制:foliate-js 要求监听 draw-annotation 自己画 ----
@@ -52,25 +58,46 @@ view.addEventListener('relocate', e => {
 })
 
 // ---- 选中文字 → 弹出底部工具栏 ----
-view.addEventListener('create-overlay', () => {})
-document.addEventListener('selectionchange', () => {
-  const sel = window.getSelection()
-  const bar = document.getElementById('bottom-bar')
-  if (!sel || sel.isCollapsed || sel.toString().trim() === '') {
-    bar.hidden = true
-    return
+// foliate 用 iframe 渲染,选区在 iframe 的 doc 里,必须遍历 renderer.getContents() 取
+function getFoliateSelection() {
+  const contents = view.renderer?.getContents() ?? []
+  for (const { index, doc } of contents) {
+    const sel = doc?.defaultView?.getSelection()
+    if (sel && !sel.isCollapsed && sel.toString().trim()) {
+      const range = sel.getRangeAt(0)
+      let cfi = null
+      try { cfi = view.getCFI(index, range) } catch {}
+      return { index, range, cfi, text: sel.toString() }
+    }
   }
-  // 选中文字转 CFI(foliate-js view 提供 getCFI(index, range))
-  const range = sel.getRangeAt(0)
-  const index = currentLocation?.index
-  if (index == null) return
-  try {
-    const cfi = view.getCFI(index, range)
-    bar.hidden = false
-    bar.dataset.cfi = cfi
-    bar.dataset.text = sel.toString()
-  } catch { /* 跨章节选区可能失败 */ }
-})
+  return null
+}
+
+// 用定时轮询检测选区变化(selectionchange 在 iframe 内不冒泡到主文档)
+let selectionPoll = null
+let lastSelectionActive = false
+function startSelectionPoll() {
+  if (selectionPoll) return
+  selectionPoll = setInterval(() => {
+    const bar = document.getElementById('bottom-bar')
+    const sel = getFoliateSelection()
+    if (sel && sel.cfi) {
+      bar.hidden = false
+      bar.dataset.cfi = sel.cfi
+      bar.dataset.text = sel.text
+      bar.dataset.index = sel.index
+      lastSelectionActive = true
+    } else if (lastSelectionActive) {
+      // 选区消失,延迟隐藏(避免划线按钮点击前就被藏)
+      setTimeout(() => {
+        const still = getFoliateSelection()
+        if (!still || !still.cfi) bar.hidden = true
+      }, 150)
+      lastSelectionActive = false
+    }
+  }, 250)
+}
+startSelectionPoll()
 
 // ---- 划线按钮 ----
 document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
@@ -78,18 +105,35 @@ document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
   const bar = ev.currentTarget
   const cfi = bar.dataset.cfi
   const text = bar.dataset.text
+  const index = Number(bar.dataset.index ?? currentLocation?.index ?? 0)
   if (!cfi) return
   const res = await fetch(`${BASE}/api/books/${BOOK_ID}/highlights`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      spine_index: currentLocation?.index ?? 0,
+      spine_index: index,
       start_cfi: cfi, end_cfi: cfi, text
     })
   }).then(r => r.json())
   if (res.ok) {
     try { await view.addAnnotation({ value: cfi, color: 'yellow', note: text }) } catch {}
     bar.hidden = true
-    window.getSelection()?.removeAllRanges()
+    try { view.deselect() } catch {}
+  }
+})
+
+// ---- 复制按钮 ----
+document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
+  if (ev.target?.dataset?.act !== 'copy') return
+  const bar = ev.currentTarget
+  const text = bar.dataset.text
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    bar.dataset.text = '已复制 ✓'
+    setTimeout(() => { bar.hidden = true }, 600)
+  } catch {
+    // 剪贴板 API 在非 HTTPS/localhost 可能失败,降级提示
+    alert('复制失败,请手动选择复制:\n' + text.slice(0, 200))
   }
 })
 
@@ -103,6 +147,29 @@ document.getElementById('toc-btn').onclick = async () => {
   if (idx != null && toc[+idx]) await view.goTo(toc[+idx].href)
 }
 
+// ---- 翻页:键盘箭头 + 点击左右半屏 ----
+// 点击中间区域不翻页(避免干扰选中文字);点左半屏上一页,右半屏下一页
+view.addEventListener('click', e => {
+  // 选中文字时不翻页
+  const sel = window.getSelection()
+  if (sel && !sel.isCollapsed) return
+  const rect = view.getBoundingClientRect()
+  const x = e.clientX - rect.left
+  if (x < rect.width * 0.4) view.goLeft()
+  else if (x > rect.width * 0.6) view.goRight()
+})
+
+document.addEventListener('keydown', e => {
+  // 输入框聚焦时不拦截
+  if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA') return
+  if (e.key === 'ArrowLeft' || e.key === 'h') { e.preventDefault(); view.goLeft() }
+  else if (e.key === 'ArrowRight' || e.key === 'l' || e.key === ' ') { e.preventDefault(); view.goRight() }
+})
+
 init().catch(e => {
-  document.getElementById('viewer').innerHTML = `<p class="error">打开书籍失败: ${e}</p>`
+  console.error('[readflow] init failed', e)
+  const d = document.createElement('pre')
+  d.style.cssText = 'padding:24px;color:#c00;white-space:pre-wrap'
+  d.textContent = '打开书籍失败: ' + (e?.stack || e)
+  document.getElementById('viewer').append(d)
 })
