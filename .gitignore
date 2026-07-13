@@ -33,3 +33,8 @@ books-library/*
 # 临时
 *.log
 tmp/
+
+# 设计文档(MRD 等),不进 git,git 上只放产品代码
+read_flow.md
+docs/mrd/
+docs/design/
