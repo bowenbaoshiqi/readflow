@@ -157,3 +157,33 @@ class TestIngestFile:
             row = conn.execute("SELECT cover_path FROM books WHERE id=?", (bid,)).fetchone()
         # 有些 epub 封面不一定能找到,但应正常入库
         assert "cover_path" in row.keys()
+
+    def test_ingest_concurrent_same_file_no_error(self):
+        """多线程同时 ingest 同一文件:最终只一条记录,且不抛 IntegrityError。
+
+        模拟 watchdog 的 flush 线程与 scan 线程对同一本新书几乎同时触发。
+        去重应在单条 SQL 内原子完成,而非 SELECT-then-INSERT 的两步(有 TOCTOU 窗口)。
+        """
+        import threading
+
+        from tests.conftest import _first_sample
+
+        src = _first_sample()
+        errors: list[str] = []
+
+        def go():
+            try:
+                ingest.ingest_file(src)
+            except Exception as e:
+                errors.append(repr(e))
+
+        threads = [threading.Thread(target=go) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        with db.get_conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+        assert n == 1, f"去重失败:应有 1 条记录,实际 {n}"
+        assert not errors, f"并发 ingest 不应抛异常,实际: {errors}"

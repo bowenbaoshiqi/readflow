@@ -102,6 +102,11 @@ def ingest_file(path: Path) -> int | None:
     - 以 file_hash 去重:已存在则更新路径/不重建
     - epub 直接解析;其他格式 v0.1 标记 unsupported(转换管线后续版本)
     返回 book_id,None 表示跳过(已存在或异常)。
+
+    并发安全:去重 + 插入合并为单条
+    INSERT ... ON CONFLICT(file_hash) DO UPDATE ... RETURNING id,
+    消除原 SELECT-then-INSERT 两步之间的 TOCTOU 窗口
+    (watchdog 的 flush 线程与 scan 线程可能对同一文件几乎同时触发)。
     """
     path = Path(path).resolve()
     if not path.is_file():
@@ -110,37 +115,35 @@ def ingest_file(path: Path) -> int | None:
     fhash = file_hash(path)
     fmt = detect_format(path)
 
-    # 去重:已入库同 hash → 仅更新 original_path(处理移动/重命名),不重复入库
-    with db_tx() as conn:
-        row = conn.execute(
-            "SELECT id FROM books WHERE file_hash=?", (fhash,)
-        ).fetchone()
-        if row:
-            conn.execute(
-                "UPDATE books SET original_path=?, updated_at=datetime('now') WHERE id=?",
-                (str(path), row["id"]),
-            )
-            return row["id"]
-
     # v0.1 只处理 epub,其他格式先标记 unsupported
     if fmt != "epub":
         with db_tx() as conn:
-            cur = conn.execute(
+            row = conn.execute(
                 """INSERT INTO books(file_hash,title,author,original_path,format,
                    ingest_status,ingest_error)
-                   VALUES(?,?,?,?,?, 'unsupported','v0.1 暂不支持该格式转换')""",
+                   VALUES(?,?,?,?,?, 'unsupported','v0.1 暂不支持该格式转换')
+                   ON CONFLICT(file_hash) DO UPDATE SET
+                     original_path=excluded.original_path,
+                     updated_at=datetime('now')
+                   RETURNING id""",
                 (fhash, path.stem, None, str(path), fmt),
-            )
-            return cur.lastrowid
+            ).fetchone()
+            return row["id"]
 
     meta = _extract_metadata(path)
     title = meta["title"] or path.stem
 
+    # 原子去重+插入:冲突时只刷新 original_path(处理移动/重命名),不覆盖已有元数据/封面。
+    # 返回 id;并附带 xmax 判断是否为本次新建(SQLite 无 xmax,改用先查再定)。
     with db_tx() as conn:
-        cur = conn.execute(
+        row = conn.execute(
             """INSERT INTO books(file_hash,title,author,cover_path,original_path,
                epub_path,format,total_chars,ingest_status)
-               VALUES(?,?,?,?,?,?,?,?, 'ready')""",
+               VALUES(?,?,?,?,?,?,?,?, 'ready')
+               ON CONFLICT(file_hash) DO UPDATE SET
+                 original_path=excluded.original_path,
+                 updated_at=datetime('now')
+               RETURNING id""",
             (
                 fhash,
                 title,
@@ -151,14 +154,20 @@ def ingest_file(path: Path) -> int | None:
                 fmt,
                 meta["total_chars"],
             ),
-        )
-        book_id = cur.lastrowid
+        ).fetchone()
+        book_id = row["id"]
+        # 冲突命中(已存在)时 cover_path 可能已有值 → 不覆盖;新建时 cover_path 为 NULL → 回填。
+        existed = conn.execute(
+            "SELECT cover_path FROM books WHERE id=?", (book_id,)
+        ).fetchone()
 
-    cover_path = _save_cover(path, meta["cover_rel"], book_id)
-    if cover_path:
-        with db_tx() as conn:
-            conn.execute(
-                "UPDATE books SET cover_path=? WHERE id=?", (cover_path, book_id)
-            )
+    # 仅新建或原本无封面时回填,避免重复提取/覆盖已存在封面
+    if not existed["cover_path"]:
+        cover_path = _save_cover(path, meta["cover_rel"], book_id)
+        if cover_path:
+            with db_tx() as conn:
+                conn.execute(
+                    "UPDATE books SET cover_path=? WHERE id=?", (cover_path, book_id)
+                )
 
     return book_id

@@ -133,6 +133,13 @@ class TestProgressAPI:
         assert data["spine_index"] == 5
         assert data["percent"] == 0.9
 
+    def test_progress_put_404_for_missing_book(self, client):
+        """对不存在的 book_id 存进度应返回 404,而非 500。"""
+        r = client.put("/api/books/99999/progress", json={
+            "spine_index": 0, "cfi": None, "percent": 0.0,
+        })
+        assert r.status_code == 404
+
 
 class TestHighlightAPI:
     """划线 CRUD"""
@@ -196,3 +203,10 @@ class TestHighlightAPI:
         })
         hs = client.get(f"/api/books/{bid}/highlights").json()
         assert hs[0]["color"] == "pink"
+
+    def test_highlights_post_404_for_missing_book(self, client):
+        """对不存在的 book_id 划线应返回 404,而非 500。"""
+        r = client.post("/api/books/99999/highlights", json={
+            "spine_index": 0, "start_cfi": "a", "end_cfi": "b", "text": "x",
+        })
+        assert r.status_code == 404

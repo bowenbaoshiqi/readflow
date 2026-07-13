@@ -19,6 +19,16 @@ router = APIRouter(tags=["reader"])
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 
+def _require_book(book_id: int, conn) -> None:
+    """写入前校验 book 存在,否则 404。
+
+    避免依赖外键约束触发 IntegrityError 冒泡成 500(前端对已删书籍的残留请求常见此路径)。
+    """
+    row = conn.execute("SELECT 1 FROM books WHERE id=?", (book_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "book not found")
+
+
 # ---------- 阅读器页面 ----------
 @router.get("/read/{book_id}", response_class=HTMLResponse)
 def reader_page(book_id: int, request: Request):
@@ -107,6 +117,7 @@ def get_progress(book_id: int):
 @router.put("/api/books/{book_id}/progress")
 def put_progress(book_id: int, body: ProgressIn):
     with db.db() as conn:
+        _require_book(book_id, conn)
         conn.execute(
             """INSERT INTO reading_progress(book_id, spine_index, cfi, percent, updated_at)
                VALUES(?,?,?,?,datetime('now'))
@@ -143,6 +154,7 @@ def list_highlights(book_id: int):
 @router.post("/api/books/{book_id}/highlights")
 def add_highlight(book_id: int, body: HighlightIn):
     with db.db() as conn:
+        _require_book(book_id, conn)
         cur = conn.execute(
             """INSERT INTO highlights(book_id, spine_index, start_cfi, end_cfi, text, color)
                VALUES(?,?,?,?,?,?)""",

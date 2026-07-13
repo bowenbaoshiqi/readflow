@@ -18,7 +18,7 @@
 
 ```bash
 uv sync                          # 安装依赖到 .venv/
-uv run uvicorn app.main:app      # 启动服务
+uv run uvicorn app.main:app --port 8765      # 启动服务
 ```
 
 浏览器打开 `http://localhost:8765`，把 epub 放进 `books-library/` 即可开始阅读。
