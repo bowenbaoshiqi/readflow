@@ -31,3 +31,106 @@ foliate-view { display: block; height: 100%; }
 #bottom-bar button { background: none; border: none; color: var(--bg); cursor: pointer; font-size: 14px; padding: 4px 8px; }
 
 .error { padding: 24px; color: #c00; }
+
+/* ---- 排版设置面板 ----
+   一张从右侧滑入的窄页边纸,不遮挡左侧正文,读着调。
+   配色取自阅读器本身:纸 #fafafa / 墨 #1a1a1a,加一抹纸墨褐 #7a5b3e 作唯一点缀。 */
+:root {
+  --paper: #fafafa;
+  --ink: #1a1a1a;
+  --rule: #e4e1da;
+  --sepia: #7a5b3e;
+  --mute: #8a8278;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #1a1a1a; --ink: #e0e0e0; --rule: #2e2c28; --sepia: #c9a878; --mute: #7a7268; }
+}
+
+#typo-btn {
+  font-family: "LXGW WenKai", serif;
+  font-size: 16px; line-height: 1;
+  width: 28px; height: 28px;
+  margin-left: 4px;
+}
+
+#typo-panel {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: 304px; max-width: 86vw;
+  background: var(--paper); color: var(--ink);
+  border-left: 1px solid var(--rule);
+  box-shadow: -8px 0 32px rgba(0,0,0,.06);
+  z-index: 30;
+  display: flex; flex-direction: column;
+  transform: translateX(0);
+  transition: transform .18s ease;
+}
+#typo-panel[hidden] { display: flex; transform: translateX(100%); }
+@media (prefers-reduced-motion: reduce) {
+  #typo-panel, #typo-panel[hidden] { transition: none; }
+}
+
+.typo-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.typo-title { font-size: 13px; letter-spacing: .3em; color: var(--mute); }
+#typo-close {
+  background: none; border: none; color: var(--mute);
+  font-size: 15px; cursor: pointer; line-height: 1; padding: 2px 4px;
+}
+#typo-close:hover { color: var(--ink); }
+
+.typo-body { padding: 8px 20px 24px; overflow-y: auto; }
+
+.typo-row {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  align-items: center; gap: 12px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.typo-row:last-child { border-bottom: none; }
+.typo-label { font-size: 13px; color: var(--mute); }
+.typo-val {
+  font-size: 13px; color: var(--sepia); min-width: 32px; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 滑块:轨道细,拇指小而实,不抢正文 */
+#typo-panel input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 2px; background: var(--rule); border-radius: 1px;
+}
+#typo-panel input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--sepia); cursor: pointer; border: 2px solid var(--paper);
+}
+#typo-panel input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--sepia); cursor: pointer; border: 2px solid var(--paper);
+}
+
+/* 字号滑块下方挂一行真实正文,拖动即见字大小变化 —— 这是面板的记忆点 */
+#typo-size-preview {
+  grid-column: 2 / 4;
+  margin-top: 10px;
+  color: var(--ink); opacity: .55;
+  line-height: 1.6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-family: "LXGW WenKai", serif;
+}
+
+/* 边距/字体:三枚或若干枚纸片,选中态用纸墨褐描边 */
+.typo-chips { display: flex; gap: 6px; grid-column: 2 / 4; }
+.typo-chips button {
+  flex: 1;
+  background: none; border: 1px solid var(--rule); color: var(--ink);
+  padding: 7px 0; font-size: 13px; cursor: pointer; border-radius: 3px;
+  transition: border-color .12s, color .12s;
+}
+.typo-chips button:hover { border-color: var(--mute); }
+.typo-chips button[aria-pressed="true"] {
+  border-color: var(--sepia); color: var(--sepia);
+}
+.typo-font-chip { font-family: "LXGW WenKai", serif; }

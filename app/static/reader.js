@@ -20,6 +20,9 @@ async function init() {
   await view.open(`${BASE}/api/books/${BOOK_ID}/file`)
   console.log('[readflow] book opened, sections:', view.book?.sections?.length)
 
+  // 排版设置:加载用户偏好 + 应用到 foliate 渲染器
+  await initTypography()
+
   // 恢复阅读位置(优先 CFI)
   const p = await fetch(`${BASE}/api/books/${BOOK_ID}/progress`).then(r => r.json())
   if (p.cfi) {
@@ -173,3 +176,133 @@ init().catch(e => {
   d.textContent = '打开书籍失败: ' + (e?.stack || e)
   document.getElementById('viewer').append(d)
 })
+
+// ---- 排版设置:面板 + foliate setStyles 注入 + localStorage 持久化 ----
+const TYPO_KEY = 'readflow:typography'
+let typoSettings = null   // 当前生效的设置
+let typoMeta = null       // {fonts, ranges} 来自后端
+
+// 面板事件绑定:立即执行,不依赖 init/initTypography 成功。
+// 若放在异步链末端,任一步抛错 → 绑定没跑 → 按钮无响应(已由 e2e 测试复现)。
+bindTypography()
+
+async function initTypography() {
+  // 拉后端默认设置 + 字体清单 + 合法范围
+  const meta = await fetch(`${BASE}/api/settings/typography`).then(r => r.json())
+  typoMeta = meta
+  // localStorage 覆盖默认值(用户上次调的)
+  const saved = loadSaved()
+  typoSettings = { ...meta.defaults, ...saved }
+  populateFontChips(meta.fonts)
+  syncPanel(typoSettings)
+  await applyTypography(typoSettings)
+}
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(TYPO_KEY) || '{}') }
+  catch { return {} }
+}
+function saveSaved() {
+  try { localStorage.setItem(TYPO_KEY, JSON.stringify(typoSettings)) }
+  catch {}
+}
+
+// 设置 → 后端生成 CSS → 注入 foliate 渲染器
+async function applyTypography(s) {
+  const r = await fetch(`${BASE}/api/settings/typography/css`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(s),
+  }).then(r => r.json())
+  view.renderer?.setStyles?.(r.css)
+}
+
+// 字体清单 → 纸片按钮(用各字体自身渲染,所见即所得)
+function populateFontChips(fonts) {
+  const box = document.getElementById('typo-font-chips')
+  box.innerHTML = ''
+  for (const f of fonts) {
+    const b = document.createElement('button')
+    b.className = 'typo-font-chip'
+    b.dataset.font = f.id
+    b.textContent = f.name
+    b.style.fontFamily = `'${f.family}', serif`
+    box.append(b)
+  }
+}
+
+// 把当前设置反映到面板控件(滑块值、纸片选中态、字号预览)
+function syncPanel(s) {
+  const size = document.getElementById('typo-size')
+  const sp = document.getElementById('typo-spacing')
+  size.value = s.fontSize
+  document.getElementById('typo-size-val').textContent = s.fontSize
+  sp.value = s.spacing
+  document.getElementById('typo-spacing-val').textContent = Number(s.spacing).toFixed(1)
+  document.getElementById('typo-size-preview').style.fontSize = s.fontSize + 'px'
+  for (const b of document.querySelectorAll('#typo-margin-chips button')) {
+    b.setAttribute('aria-pressed', b.dataset.margin === s.margin)
+  }
+  for (const b of document.querySelectorAll('#typo-font-chips button')) {
+    b.setAttribute('aria-pressed', b.dataset.font === s.font)
+  }
+}
+
+function bindTypography() {
+  const panel = document.getElementById('typo-panel')
+  const btn = document.getElementById('typo-btn')
+  const close = document.getElementById('typo-close')
+
+  const open = () => { panel.hidden = false }
+  const shut = () => { panel.hidden = true }
+  btn.onclick = open
+  close.onclick = shut
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') shut() })
+  // 点面板外收起(不挡正文)
+  document.addEventListener('click', e => {
+    if (panel.hidden) return
+    if (!panel.contains(e.target) && e.target !== btn) shut()
+  })
+
+  // 字号 / 行距滑块:拖动实时生效(节流,避免每次拖都发请求)
+  // typoSettings 可能在初始化未完成时为 null,此时忽略(不崩)
+  let sizeTimer = null
+  document.getElementById('typo-size').oninput = e => {
+    if (!typoSettings) return
+    typoSettings.fontSize = +e.target.value
+    document.getElementById('typo-size-val').textContent = typoSettings.fontSize
+    document.getElementById('typo-size-preview').style.fontSize = typoSettings.fontSize + 'px'
+    clearTimeout(sizeTimer)
+    sizeTimer = scheduleApply()
+  }
+  let spTimer = null
+  document.getElementById('typo-spacing').oninput = e => {
+    if (!typoSettings) return
+    typoSettings.spacing = +e.target.value
+    document.getElementById('typo-spacing-val').textContent = typoSettings.spacing.toFixed(1)
+    clearTimeout(spTimer)
+    spTimer = scheduleApply()
+  }
+
+  // 边距 / 字体纸片:点击即换
+  document.getElementById('typo-margin-chips').onclick = e => {
+    if (!typoSettings) return
+    const b = e.target.closest('button[data-margin]'); if (!b) return
+    typoSettings.margin = b.dataset.margin
+    syncPanel(typoSettings); applyAndSave(typoSettings)
+  }
+  document.getElementById('typo-font-chips').onclick = e => {
+    if (!typoSettings) return
+    const b = e.target.closest('button[data-font]'); if (!b) return
+    typoSettings.font = b.dataset.font
+    syncPanel(typoSettings); applyAndSave(typoSettings)
+  }
+}
+
+// 节流:拖动滑块时合并连续变更,停手后发一次
+function scheduleApply() {
+  return setTimeout(() => { applyAndSave(typoSettings) }, 120)
+}
+function applyAndSave(s) {
+  applyTypography(s).catch(e => console.warn('[readflow] apply typo failed', e))
+  saveSaved()
+}
