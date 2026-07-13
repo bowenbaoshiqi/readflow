@@ -23,7 +23,7 @@ STABLE_SECONDS = 2.0       # 文件写入稳定阈值
 class LibraryHandler(FileSystemEventHandler):
     def __init__(self, library_dir: Path):
         self.library_dir = Path(library_dir)
-        self._pending: dict[str, float] = {}  # path -> mtime last seen
+        self._pending: dict[str, float] = {}  # path -> 最后一次事件时间(用于去抖)
         self._lock = threading.Lock()
 
     def _schedule(self, path_str: str) -> None:

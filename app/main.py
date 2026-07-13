@@ -1,6 +1,6 @@
 """书舟 v0.1 - FastAPI 入口。
 
-启动: uv run uvicorn app.main:app --reload
+启动: uv run uvicorn app.main:app --port 8765 --reload
 """
 from __future__ import annotations
 
