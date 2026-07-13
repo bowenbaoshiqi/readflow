@@ -54,10 +54,40 @@ CREATE INDEX IF NOT EXISTS idx_highlights_book ON highlights(book_id);
 
 
 def init_db() -> None:
-    """初始化数据库(幂等)。"""
+    """初始化数据库(幂等)。
+
+    v0.2 新增的外部元数据列用 ALTER TABLE ADD COLUMN 补入(不重建表,
+    保留现有数据)。ADD COLUMN 不可重复执行,用 PRAGMA 检查列存在性。
+    """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate_add_metadata_columns(conn)
+
+
+def _migrate_add_metadata_columns(conn) -> None:
+    """幂等地为 books 表补外部元数据列(v0.2)。
+
+    每列:存在则跳过,不存在则 ADD。顺序无依赖。
+    """
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(books)")}
+    new_cols = [
+        ("summary", "TEXT"),
+        ("rating", "REAL"),
+        ("rating_count", "INTEGER"),
+        ("tags", "TEXT"),              # JSON 数组字符串
+        ("publisher", "TEXT"),
+        ("publish_date", "TEXT"),
+        ("isbn", "TEXT"),
+        ("page_count", "INTEGER"),
+        ("meta_source", "TEXT"),       # 'google_books' / 'douban' / provider.name
+        ("meta_status", "TEXT"),       # NULL/pending/ok/failed/not_found
+        ("meta_error", "TEXT"),
+        ("meta_fetched_at", "TEXT"),
+    ]
+    for col, typ in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE books ADD COLUMN {col} {typ}")
 
 
 def get_conn() -> sqlite3.Connection:

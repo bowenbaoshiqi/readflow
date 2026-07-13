@@ -87,6 +87,36 @@ class TestExtractMetadata:
         assert meta["author"] is None
         assert meta["total_chars"] == 0
 
+    def test_extract_publisher_from_epub(self):
+        """从 epub 提取出版社(《北京法源寺》有:时代文艺出版社)。"""
+        from tests.conftest import _sample_epub
+        meta = ingest._extract_metadata(_sample_epub("北京法源寺"))
+        assert meta.get("publisher") == "时代文艺出版社"
+
+    def test_extract_publish_date_from_epub(self):
+        """从 epub 提取出版日期(《北京法源寺》有)。"""
+        from tests.conftest import _sample_epub
+        meta = ingest._extract_metadata(_sample_epub("北京法源寺"))
+        assert meta.get("publish_date")  # 有值即可
+
+    def test_extract_isbn_and_description_from_qintan(self):
+        """《钦探》epub 内嵌有 ISBN + description,应提取到。
+
+        这是外部元数据合并的关键:epub 内嵌的简介/ISBN 作为兜底,
+        《钦探》Google 无简介,靠 epub 内嵌的补上。
+        """
+        from tests.conftest import _sample_epub
+        meta = ingest._extract_metadata(_sample_epub("钦探"))
+        assert meta.get("isbn"), "《钦探》应有 ISBN"
+        assert meta.get("description"), "《钦探》应有内嵌简介"
+
+    def test_description_stripped_of_html(self):
+        """简介应去 HTML 标签存纯文本(epub description 常是 HTML)。"""
+        from tests.conftest import _sample_epub
+        meta = ingest._extract_metadata(_sample_epub("钦探"))
+        desc = meta.get("description") or ""
+        assert "<" not in desc, f"简介未去 HTML 标签: {desc[:80]}"
+
 
 class TestIngestFile:
     """测试 ingest_file"""
@@ -157,6 +187,108 @@ class TestIngestFile:
             row = conn.execute("SELECT cover_path FROM books WHERE id=?", (bid,)).fetchone()
         # 有些 epub 封面不一定能找到,但应正常入库
         assert "cover_path" in row.keys()
+
+    def test_cover_file_named_by_file_hash_not_id(self, tmp_path):
+        """封面文件名用 file_hash,不用自增 book_id。
+
+        book_id 会被复用(删书后自增 id 回退/重入库),用它命名会串图。
+        file_hash 由内容决定、入库即有、稳定唯一 → 封面文件名绑它。
+        """
+        from tests.conftest import _sample_epub
+        src = _sample_epub("钦探")
+        bid = ingest.ingest_file(src)
+
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT file_hash, cover_path FROM books WHERE id=?", (bid,)
+            ).fetchone()
+        fhash = row["file_hash"]
+        cover_rel = row["cover_path"]
+        assert cover_rel is not None, "《钦探》应有封面"
+        # 文件名应精确等于 {file_hash}.jpg(不是 endswith,避免 hash 末位巧合)
+        fname = Path(cover_rel).name
+        assert fname == f"{fhash}.jpg", \
+            f"封面应按 file_hash 命名,实际文件名:{fname}"
+        assert fname != f"{bid}.jpg", \
+            f"封面不应按 book_id 命名(会串图),实际文件名:{fname}"
+
+    def test_cover_reused_on_reingest_no_duplicate_file(self, tmp_path):
+        """同书重入库(改名)→ file_hash 不变 → 封面文件复用,不产生重复/串图。
+
+        回归 4.jpg/5.jpg 串图 bug:旧逻辑用 book_id 命名,重入库时
+        两个线程并发写 {book_id}.jpg 会互相覆盖串图。
+        用 file_hash 后:同一内容 → 同一文件名 → 天然幂等。
+        """
+        from tests.conftest import _sample_epub
+        src = _sample_epub("钦探")
+        renamed = tmp_path / "钦探_副本.epub"
+        renamed.write_bytes(src.read_bytes())
+
+        bid1 = ingest.ingest_file(src)
+        bid2 = ingest.ingest_file(renamed)
+        assert bid1 == bid2  # 同 hash 同书
+
+        # 封面目录里应只有这一个 file_hash 命名的文件,没有 {id}.jpg 残留
+        covers = list(ingest.COVER_DIR.glob("*.jpg"))
+        assert len(covers) == 1, f"应只一个封面文件,实际:{[c.name for c in covers]}"
+        # 且不是以 book_id 命名
+        assert not any(c.name == f"{bid1}.jpg" for c in covers)
+
+    def test_ingest_persists_epub_embedded_metadata(self):
+        """入库时 epub 内嵌的 publisher/date/description/isbn 应写入 books 表。
+
+        这些是外部元数据的兜底数据 + ISBN 查询输入,必须入库即存。
+        《钦探》有全部四字段。
+        """
+        from tests.conftest import _sample_epub
+        bid = ingest.ingest_file(_sample_epub("钦探"))
+        with db.get_conn() as conn:
+            row = dict(conn.execute(
+                "SELECT publisher, publish_date, isbn, summary FROM books WHERE id=?",
+                (bid,)
+            ).fetchone())
+        assert row["publisher"] == "作家出版社" or "huibooks" in (row["publisher"] or "")
+        assert row["isbn"] == "9787521226805"
+        assert row["summary"]  # epub 内嵌简介
+        assert row["publish_date"]
+
+    def test_ingest_triggers_async_enrich(self, monkeypatch):
+        """入库成功后应异步触发 enrich(不阻塞 ingest 返回)。
+
+        用 mock 替换 enrich 的实际执行,验证被调用;ingest 返回值不受 enrich 影响。
+        不触真网。
+        """
+        from tests.conftest import _first_sample
+        import app.metadata as meta_mod
+        calls = []
+        # mock 真正的 enrich 执行(worker 线程里调的函数)
+        monkeypatch.setattr(meta_mod, "enrich_book", lambda bid: calls.append(bid))
+        bid = ingest.ingest_file(_first_sample())
+        assert bid is not None
+        # enrich 在 daemon 线程里跑,等它一下
+        import time
+        for _ in range(50):
+            if calls:
+                break
+            time.sleep(0.02)
+        assert bid in calls, "入库后未触发 enrich"
+
+    def test_ingest_enrich_failure_does_not_break_ingest(self, monkeypatch):
+        """enrich 抛异常不影响入库(ingest 仍返回 book_id,书可读)。
+
+        这是稳定性核心:外部元数据挂了,阅读/入库不受影响。
+        enrich 在 daemon 线程里跑,异常被 worker 兜底吞掉,不冒泡到 ingest。
+        """
+        from tests.conftest import _first_sample
+        import app.metadata as meta_mod
+        def boom(bid):
+            raise RuntimeError("enrich 炸了")
+        monkeypatch.setattr(meta_mod, "enrich_book", boom)
+        bid = ingest.ingest_file(_first_sample())
+        assert bid is not None, "enrich 异常不应让 ingest 返回 None"
+        # 给 daemon 线程时间跑完(异常应被吞,不冒泡)
+        import time
+        time.sleep(0.3)
 
     def test_ingest_concurrent_same_file_no_error(self):
         """多线程同时 ingest 同一文件:最终只一条记录,且不抛 IntegrityError。

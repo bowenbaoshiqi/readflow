@@ -1,14 +1,16 @@
-"""书库 API:列表/详情/封面。"""
+"""书库 API:列表/详情/封面 + 书籍详情页。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 
 from .. import db
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+pages = APIRouter(tags=["pages"])  # HTML 页面路由(无 /api 前缀)
 
 DATA_ROOT = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -18,7 +20,7 @@ def list_books():
     with db.get_conn() as conn:
         rows = conn.execute(
             """SELECT b.id, b.title, b.author, b.format, b.ingest_status,
-                      b.total_chars, b.cover_path,
+                      b.total_chars, b.cover_path, b.rating, b.meta_status,
                       COALESCE(p.percent, 0) AS progress
                FROM books b
                LEFT JOIN reading_progress p ON p.book_id = b.id
@@ -48,11 +50,145 @@ def get_book(book_id: int):
 def get_cover(book_id: int):
     with db.get_conn() as conn:
         row = conn.execute(
-            "SELECT cover_path FROM books WHERE id=?", (book_id,)
+            "SELECT file_hash, cover_path FROM books WHERE id=?", (book_id,)
         ).fetchone()
     if not row or not row["cover_path"]:
         raise HTTPException(404, "no cover")
     cover_file = DATA_ROOT.parent / row["cover_path"]
+    # 防御:封面文件名应含该书的 file_hash(防 4.jpg/5.jpg 式串图)。
+    # 迁移前的旧 {book_id}.jpg 命名会在此被挡,强制走迁移重建。
+    if row["file_hash"] and row["file_hash"] not in cover_file.name:
+        raise HTTPException(404, "cover naming stale, needs re-migrate")
     if not cover_file.is_file():
         raise HTTPException(404, "cover file missing")
     return FileResponse(str(cover_file))
+
+
+@pages.get("/book/{book_id}", response_class=HTMLResponse)
+def book_detail_page(book_id: int, request: Request):
+    """书籍详情页:封面 + 元数据 + 简介 + 开始阅读。
+
+    外部元数据字段可能为 null(enrich 未完成或 not_found),模板对空值优雅降级。
+    """
+    with db.get_conn() as conn:
+        row = conn.execute(
+            """SELECT b.*, COALESCE(p.percent, 0) AS progress
+               FROM books b
+               LEFT JOIN reading_progress p ON p.book_id = b.id
+               WHERE b.id = ?""",
+            (book_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "book not found")
+    b = dict(row)
+    base = str(request.base_url).rstrip("/")
+
+    # 解析 tags(JSON 字符串 → list)
+    tags = []
+    if b.get("tags"):
+        try:
+            tags = json.loads(b["tags"])
+        except (json.JSONDecodeError, TypeError):
+            tags = []
+
+    # 封面
+    cover = (
+        f'<img src="{base}/api/library/{b["id"]}/cover" alt="封面">'
+        if b.get("cover_path") else
+        '<div class="cover-placeholder">无封面</div>'
+    )
+
+    # 评分(Google 1-5 分,显示一位小数;无评分不显示)
+    rating_html = ""
+    if b.get("rating") is not None:
+        rating_html = (
+            f'<span class="rating">★ {float(b["rating"]):.1f}</span>'
+            f'<span class="rating-count">{b.get("rating_count") or 0} 人评分</span>'
+        )
+
+    # 信息行(只显示有值的)
+    info_rows = []
+    if b.get("author"):
+        info_rows.append(("作者", b["author"]))
+    if b.get("publisher"):
+        info_rows.append(("出版社", b["publisher"]))
+    if b.get("publish_date"):
+        info_rows.append(("出版日期", b["publish_date"]))
+    if b.get("isbn"):
+        info_rows.append(("ISBN", b["isbn"]))
+    if b.get("page_count"):
+        info_rows.append(("页数", f'{b["page_count"]} 页'))
+    if b.get("language"):
+        info_rows.append(("语言", _lang_name(b["language"])))
+    info_html = "".join(
+        f'<div class="info-row"><span class="info-label">{lbl}</span>'
+        f'<span class="info-value">{val}</span></div>'
+        for lbl, val in info_rows
+    )
+
+    # 标签
+    tags_html = "".join(f'<span class="tag">{t}</span>' for t in tags) if tags else ""
+
+    # 简介
+    summary_html = ""
+    if b.get("summary"):
+        summary_html = f'<section class="summary"><h2>简介</h2><p>{_esc(b["summary"])}</p></section>'
+
+    # 元数据状态提示(enrich 未完成或失败时)
+    meta_hint = ""
+    ms = b.get("meta_status")
+    if ms == "pending" or ms is None:
+        meta_hint = '<div class="meta-hint loading">正在补全书目信息…</div>'
+    elif ms == "failed":
+        meta_hint = '<div class="meta-hint failed">书目信息补全失败</div>'
+    elif ms == "not_found":
+        meta_hint = '<div class="meta-hint">未找到外部书目信息</div>'
+
+    prog = int((b["progress"] or 0) * 100)
+    progress_html = (
+        f'<div class="progress-bar"><div style="width:{prog}%"></div></div>'
+        f'<span class="progress-text">已读 {prog}%</span>'
+        if prog > 0 else
+        '<span class="progress-text">未开始</span>'
+    )
+
+    title = _esc(b.get("title") or "无标题")
+
+    return f"""<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — 书舟</title>
+<link rel="stylesheet" href="{base}/static/css/book.css">
+</head><body>
+<a class="back" href="/">← 返回书库</a>
+<main class="detail">
+  <div class="cover-side">{cover}</div>
+  <div class="info-side">
+    <h1 class="book-title">{title}</h1>
+    <div class="rating-row">{rating_html}</div>
+    <div class="info-table">{info_html}</div>
+    <div class="tags">{tags_html}</div>
+    {meta_hint}
+    <div class="progress-row">{progress_html}</div>
+    <a class="read-btn" href="/read/{b['id']}">{'继续阅读' if prog > 0 else '开始阅读'}</a>
+  </div>
+</main>
+{summary_html}
+</body></html>"""
+
+
+def _esc(s: str | None) -> str:
+    """HTML 转义。"""
+    if not s:
+        return ""
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _lang_name(code: str | None) -> str:
+    """语言代码 → 中文名。"""
+    if not code:
+        return ""
+    m = {"zh": "中文", "zh-cn": "中文", "zho": "中文", "en": "英语",
+         "eng": "英语", "ja": "日语", "jpn": "日语"}
+    return m.get(code.lower(), code)

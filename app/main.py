@@ -31,13 +31,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="书舟", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(library.router)
+app.include_router(library.pages)
 app.include_router(reader.router)
 app.include_router(settings.router)
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    """书库首页:书籍网格。"""
+    """书库首页:书籍网格。点击进详情页 /book/{id}。"""
     books = library.list_books()
     base = str(request.base_url).rstrip("/")
     cards = []
@@ -51,13 +52,19 @@ def index(request: Request):
             '<span class="badge bad">不支持</span>'
             if b["ingest_status"] == "unsupported" else ""
         )
+        # 评分(有才显示)
+        rating = (
+            f'<span class="rating">★ {float(b["rating"]):.1f}</span>'
+            if b.get("rating") is not None else ""
+        )
         prog = int((b["progress"] or 0) * 100)
         cards.append(f"""
-        <a class="card" href="/read/{b['id']}">
+        <a class="card" href="/book/{b['id']}">
           {cover}
           <div class="meta">
             <div class="title">{b['title'] or '无标题'}{status}</div>
             <div class="author">{b['author'] or ''}</div>
+            <div class="card-rating">{rating}</div>
             <div class="progress-bar"><div style="width:{prog}%"></div></div>
           </div>
         </a>""")

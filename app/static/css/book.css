@@ -1,0 +1,129 @@
+/* 书舟 - 书籍详情页样式
+   设计:延续首页 #f5f5f5 克制底 + 书脊墨色 #2c2c2c 作签名。
+   不走 cream/terracotta 文艺模板,也不走 near-black+acid 科技模板。
+   签名元素:简介区的左竖线(书页边批注感),克制不花哨。
+*/
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  background: #f5f5f5; color: #2c2c2c; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.back {
+  display: inline-block; padding: 20px 32px 0; color: #888;
+  font-size: 14px; text-decoration: none;
+}
+.back:hover { color: #2c2c2c; }
+
+/* 主体:左封面 + 右信息,书架陈列式 */
+.detail {
+  display: grid; grid-template-columns: 220px 1fr; gap: 40px;
+  padding: 16px 32px 32px; max-width: 900px; margin: 0 auto;
+}
+
+.cover-side img,
+.cover-side .cover-placeholder {
+  width: 100%; aspect-ratio: 2/3; object-fit: cover; display: block;
+  background: #e8e8e8; border-radius: 4px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.15), 0 2px 4px rgba(0,0,0,.1);
+}
+.cover-side .cover-placeholder {
+  color: #aaa; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.info-side { padding-top: 4px; }
+
+.book-title {
+  font-size: 26px; font-weight: 700; letter-spacing: -0.01em;
+  line-height: 1.25; margin-bottom: 12px;
+}
+
+/* 评分行 */
+.rating-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.rating { color: #b8860b; font-size: 16px; font-weight: 600; }
+.rating-count { color: #999; font-size: 13px; }
+
+/* 信息表:标签 + 值,竖排 */
+.info-table { margin-bottom: 16px; }
+.info-row {
+  display: grid; grid-template-columns: 80px 1fr; gap: 12px;
+  padding: 5px 0; font-size: 14px;
+}
+.info-label { color: #999; }
+.info-value { color: #2c2c2c; }
+
+/* 标签 */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.tag {
+  font-size: 12px; color: #5a5a5a; background: #ececec;
+  padding: 3px 10px; border-radius: 12px;
+}
+
+/* 元数据状态提示 */
+.meta-hint {
+  font-size: 13px; color: #888; padding: 8px 0; margin-bottom: 12px;
+}
+.meta-hint.loading { color: #2563eb; }
+.meta-hint.failed { color: #c00; }
+
+/* 阅读进度 */
+.progress-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+.progress-bar {
+  flex: 1; max-width: 200px; height: 4px; background: #e0e0e0;
+  border-radius: 2px; overflow: hidden;
+}
+.progress-bar div { height: 100%; background: #2563eb; }
+.progress-text { font-size: 13px; color: #888; }
+
+/* 开始阅读按钮 */
+.read-btn {
+  display: inline-block; padding: 12px 32px; background: #2c2c2c;
+  color: #fff; text-decoration: none; border-radius: 6px;
+  font-size: 15px; font-weight: 500; transition: background .15s;
+}
+.read-btn:hover { background: #1a1a1a; }
+
+/* 简介区:签名元素——左竖线作书页边批注 */
+.summary {
+  max-width: 900px; margin: 0 auto; padding: 8px 32px 48px;
+}
+.summary h2 {
+  font-size: 14px; font-weight: 600; color: #888;
+  letter-spacing: 0.05em; margin-bottom: 12px;
+  text-transform: uppercase;
+}
+.summary p {
+  border-left: 3px solid #2c2c2c; padding-left: 16px;
+  font-size: 15px; line-height: 1.8; color: #3a3a3a;
+}
+
+/* 响应式:窄屏封面在上 */
+@media (max-width: 600px) {
+  .detail { grid-template-columns: 140px 1fr; gap: 20px; padding: 8px 16px 24px; }
+  .back { padding: 16px 16px 0; }
+  .book-title { font-size: 20px; }
+  .summary { padding: 8px 16px 32px; }
+  .info-row { grid-template-columns: 70px 1fr; gap: 8px; font-size: 13px; }
+}
+
+/* 深色模式 */
+@media (prefers-color-scheme: dark) {
+  body { background: #1a1a1a; color: #e0e0e0; }
+  .back { color: #888; } .back:hover { color: #e0e0e0; }
+  .cover-side .cover-placeholder { background: #2a2a2a; color: #666; }
+  .book-title { color: #f0f0f0; }
+  .info-label { color: #777; } .info-value { color: #d0d0d0; }
+  .tag { background: #2a2a2a; color: #aaa; }
+  .progress-bar { background: #2a2a2a; }
+  .progress-text { color: #777; }
+  .read-btn { background: #e0e0e0; color: #1a1a1a; }
+  .read-btn:hover { background: #fff; }
+  .summary h2 { color: #777; }
+  .summary p { border-left-color: #e0e0e0; color: #c0c0c0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .read-btn { transition: none; }
+}
