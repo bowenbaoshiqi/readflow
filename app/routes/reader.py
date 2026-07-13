@@ -39,13 +39,29 @@ def reader_page(book_id: int, request: Request):
     if not row:
         raise HTTPException(404, "book not found")
     base = str(request.base_url).rstrip("/")
-    return f"""<!doctype html>
+    html = f"""<!doctype html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{row['title']} - 书舟</title>
 <link rel="stylesheet" href="{base}/static/css/reader.css">
+<script>
+// Kindle(实验性浏览器)不支持 ES module,foliate-js 依赖 module 无法加载。
+// Kindle 重定向到 /read-html/{book_id}(服务端渲染 HTML,Kindle 友好);
+// 其他设备走 reader.js(原生 module,foliate 作者推荐方式)。
+(function() {{
+  var ua = navigator.userAgent;
+  if (/Kindle|Silk/.test(ua)) {{
+    location.replace('{base}/read-html/{book_id}');
+    return;
+  }}
+  var s = document.createElement('script');
+  s.type = 'module';
+  s.src = '{base}/static/reader.js';
+  document.head.appendChild(s);
+}})();
+</script>
 </head>
 <body>
 <div id="toolbar">
@@ -107,7 +123,195 @@ window.addEventListener('unhandledrejection', e => {{
   document.body.append(d);
 }});
 </script>
-<script type="module" src="{base}/static/reader.js"></script>
+</body>
+</html>"""
+    return html
+
+
+# ---------- Kindle/旧浏览器:服务端渲染 HTML 阅读 ----------
+# foliate-js 依赖 ES module + 现代解压 API(DecompressionStream),Kindle 实验性
+# 浏览器都不支持,bundle polyfill 链过深(已验证:Blob.arrayBuffer→DecompressionStream
+# 连锁缺失)。故此路径在服务端用 ebooklib 解析 epub,把章节 XHTML 转成静态 HTML,
+# 浏览器只看 HTML + 极少普通 JS(翻页/字号)。Kindle 友好,手机也可用。
+#
+# 翻页:CSS columns 每栏一屏 = 翻页书体验(整页切换,不滚动)。JS 用 px 设
+# column-width/height(Kindle 不认 vw/vh)。进度存章节 index(字符级 CFI 在静态 HTML 无意义)。
+@router.get("/read-html/{book_id}", response_class=HTMLResponse)
+def reader_html_page(book_id: int, request: Request, ch: int = 0):
+    """Kindle 友好的 HTML 阅读页:columns 分栏翻页 + 字号 + 霞鹜文楷字体。
+
+    ch:spine 章节序号(0 起)。无内容章节(空白扉页)自动跳过到下一个。
+    """
+    import re
+    import ebooklib
+    from ebooklib import epub
+
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT original_path, epub_path, title FROM books WHERE id=? AND ingest_status='ready'",
+            (book_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "book not available")
+    epub_path = Path(row["original_path"])
+    if not epub_path.is_file() and row["epub_path"]:
+        epub_path = Path(row["epub_path"])
+    if not epub_path.is_file():
+        raise HTTPException(404, "file missing on disk")
+
+    try:
+        book = epub.read_epub(str(epub_path), options={"ignore_ncx": True})
+    except Exception as e:
+        raise HTTPException(500, f"epub 解析失败: {e}")
+
+    # 预扫描 spine:为每个章节算出"纯文本长度",用于跳过无内容扉页 + 翻页时定位。
+    # 章节正文提取:body inner → 去 script/style → 保留段落标签。
+    def _chapter_body(item):
+        content = item.get_content().decode("utf-8", errors="ignore")
+        body = re.search(r"<body[^>]*>(.*?)</body>", content, re.S)
+        inner = body.group(1) if body else content
+        inner = re.sub(r"<script[^>]*>.*?</script>", "", inner, flags=re.S)
+        inner = re.sub(r"<style[^>]*>.*?</style>", "", inner, flags=re.S)
+        return inner
+
+    chapters = []  # [(spine_idx, item_id, name, body_html, text_len)]
+    for sidx, (item_id, _linear) in enumerate(book.spine):
+        item = book.get_item_with_id(item_id)
+        if item is None:
+            continue
+        inner = _chapter_body(item)
+        text_len = len(re.sub(r"<[^>]+>", "", inner).strip())
+        chapters.append((sidx, item_id, item.get_name(), inner, text_len))
+
+    if not chapters:
+        raise HTTPException(500, "epub 无可读章节")
+
+    # 有内容(非空白)的章节序号列表,用于翻页跳过扉页
+    substantial = [i for i, c in enumerate(chapters) if c[4] > 20]
+    if not substantial:
+        substantial = [0]
+
+    # 定位当前章节:从 ch 开始找第一个有内容的
+    cur = next((i for i in substantial if i >= ch), substantial[0])
+    # 上下章(在有内容章节间跳)
+    cur_pos = substantial.index(cur)
+    prev_ch = chapters[substantial[cur_pos - 1]][0] if cur_pos > 0 else None
+    next_ch = chapters[substantial[cur_pos + 1]][0] if cur_pos < len(substantial) - 1 else None
+
+    _, _, chapter_name, chapter_html, text_len = chapters[cur]
+
+    base = str(request.base_url).rstrip("/")
+    title = row["title"] or "无标题"
+    progress_pct = int((cur_pos + 1) / len(substantial) * 100)
+
+    return f"""<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} - 书舟</title>
+<script>
+// 字号恢复:在 head 最早执行,渲染前应用,避免"先用默认字号渲染再切换"的视觉跳变。
+try {{
+  var s = localStorage.getItem('readflow:html-fs');
+  if (s) document.documentElement.style.setProperty('--fs', s + 'px');
+}} catch(e) {{}}
+</script>
+<style>
+@font-face {{
+  font-family: 'LXGW';
+  src: url('{base}/static/fonts/lxgw.ttf') format('truetype');
+  font-weight: normal; font-style: normal;
+}}
+:root {{ --fs: 18px; --lh: 1.8; --mg: 16px; }}
+* {{ box-sizing: border-box; }}
+html,body {{ margin:0; padding:0; height:100%; overflow:hidden; background:#fff; color:#222; font-family:'LXGW', serif; }}
+/* 阅读区:CSS columns 分栏,每栏一屏 = 翻页书。JS 用 px 设 column-width(Kindle 不认 vw)。
+   关键:content 自身无 padding(否则 padding 撑大总宽,最后一栏溢出视口右侧漏字)。
+   文字边距用内层 .text 的 padding,在栏内,不溢出。 */
+#reader {{ height: 100vh; overflow: hidden; }}
+#content {{
+  font-size: var(--fs); line-height: var(--lh);
+  font-family: 'LXGW', serif;
+  height: 100vh; overflow: hidden;
+  column-gap: 0; column-fill: auto;
+  /* column-width 由 JS 设 px = innerWidth */
+}}
+#content .text {{ padding: 8px var(--mg) 8px var(--mg); }}
+#content p {{ margin: 0 0 1em 0; text-indent: 2em; break-inside: avoid; }}
+#content h1,#content h2,#content h3 {{ line-height: 1.4; break-inside: avoid; }}
+/* 顶部工具栏:浮动,默认隐藏,点顶部中间区域唤出 */
+#bar {{
+  position: fixed; top:0; left:0; right:0; height:48px;
+  background:#f0f0f0; border-bottom:1px solid #ccc;
+  align-items:center; font-size:14px; padding:0 12px; gap:8px;
+  z-index:20; display:none;
+}}
+#bar.show {{ display:flex; }}
+#bar button {{ font-size:16px; padding:4px 10px; }}
+#bar a {{ text-decoration:none; }}
+/* 翻页点击层:左 40% 上一页,右 60% 下一页,顶部中间条唤工具栏 */
+#tap-left {{ position:fixed; top:0; left:0; width:40vw; height:100vh; z-index:6; }}
+#tap-right {{ position:fixed; top:0; right:0; width:60vw; height:100vh; z-index:7; }}
+#tap-mid {{ position:fixed; top:0; left:35vw; width:30vw; height:10vh; z-index:8; }}
+</style>
+</head>
+<body>
+<div id="bar">
+  <a href="/">←书库</a>
+  <span style="flex:1">{title}</span>
+  <span style="color:#666" id="pct">{progress_pct}%</span>
+  <button onclick="adj(-1)">A−</button>
+  <button onclick="adj(1)">A+</button>
+  <a href="{'/read-html/' + str(book_id) + '?ch=' + str(prev_ch) if prev_ch is not None else '#'}" id="prev-ch-link" style="margin-left:8px{';color:#999' if prev_ch is None else ''}">上一章</a>
+  <a href="{'/read-html/' + str(book_id) + '?ch=' + str(next_ch) if next_ch is not None else '#'}" id="next-ch-link"{' style="color:#999"' if next_ch is None else ''}>下一章</a>
+</div>
+<div id="reader"><div id="content"><div class="text">{chapter_html}</div></div></div>
+<div id="tap-left"></div>
+<div id="tap-right"></div>
+<div id="tap-mid"></div>
+<script>
+// 普通脚本(非 module),Kindle 能跑。
+// 翻页书:CSS columns 每栏一屏,JS 用 px 设 column-width(Kindle 不认 vw),translateX 翻页。
+var reader = document.getElementById('reader');
+var content = document.getElementById('content');
+var page = 0;
+// 用 px 设 column-width + height,避开 Kindle 对 vw/vh 的不识别(100vh 可能含地址栏,底部空)
+content.style.columnWidth = window.innerWidth + 'px';
+content.style.height = window.innerHeight + 'px';
+function pageCount() {{
+  return Math.max(1, Math.round(content.scrollWidth / window.innerWidth));
+}}
+function show() {{
+  content.style.transform = 'translateX(' + (-page * window.innerWidth) + 'px)';
+}}
+function next() {{
+  if (page < pageCount() - 1) {{ page++; show(); }}
+  else {{ var nl = document.getElementById('next-ch-link'); if (nl && nl.getAttribute('href') !== '#') location.href = nl.href; }}
+}}
+function prev() {{
+  if (page > 0) {{ page--; show(); }}
+  else {{ var pl = document.getElementById('prev-ch-link'); if (pl && pl.getAttribute('href') !== '#') location.href = pl.href; }}
+}}
+document.getElementById('tap-left').addEventListener('click', prev);
+document.getElementById('tap-right').addEventListener('click', next);
+document.getElementById('tap-mid').addEventListener('click', function(e) {{
+  e.stopPropagation();
+  var bar = document.getElementById('bar');
+  bar.className = bar.className === 'show' ? '' : 'show';
+}});
+// 字号调整:改 CSS 变量后 columns 重排,等下一帧再算页数回首页
+function adj(d) {{
+  var root = document.documentElement.style;
+  var cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--fs')) || 18;
+  var n = Math.max(12, Math.min(32, cur + d));
+  root.setProperty('--fs', n + 'px');
+  try {{ localStorage.setItem('readflow:html-fs', n); }} catch(e) {{}}
+  page = 0;
+  requestAnimationFrame(function() {{ requestAnimationFrame(show); }});
+}}
+window.addEventListener('load', function() {{ setTimeout(show, 300); }});
+</script>
 </body>
 </html>"""
 
@@ -117,12 +321,18 @@ window.addEventListener('unhandledrejection', e => {{
 def get_epub_file(book_id: int):
     with db.get_conn() as conn:
         row = conn.execute(
-            "SELECT epub_path, title FROM books WHERE id=? AND ingest_status='ready'",
+            "SELECT epub_path, original_path, title FROM books WHERE id=? AND ingest_status='ready'",
             (book_id,),
         ).fetchone()
     if not row:
         raise HTTPException(404, "book not available")
-    p = Path(row["epub_path"])
+    # 用 original_path 定位:ingest 的 ON CONFLICT 会刷新 original_path 到当前环境路径
+    # (容器 /books-library/... / 宿主 /Users/.../books-library/...),
+    # 而 epub_path 不在 UPDATE 列表里,跨环境重入库会停留在旧环境的绝对路径 → 文件找不到。
+    # epub 即原文件时两者本应相同;未来格式转换(epub_path≠original)再单独处理渲染文件定位。
+    p = Path(row["original_path"])
+    if not p.is_file() and row["epub_path"]:
+        p = Path(row["epub_path"])
     if not p.is_file():
         raise HTTPException(404, "file missing on disk")
     return FileResponse(str(p), media_type="application/epub+zip",

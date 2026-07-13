@@ -1,0 +1,30 @@
+# ReadFlow v0.3 - 容器化部署
+# 用法: docker compose up -d
+# 访问: http://<nas-ip>:8765
+#
+# 三个 volume 持久化(容器重建不丢):
+#   ./books-library  书库原文件 + watcher 监听源
+#   ./data           SQLite(readflow.db) + 封面图
+# 重启策略 unless-stopped:开机自启 + 崩溃重启。
+
+services:
+  readflow:
+    # 默认构建当前主机架构(arm64 NAS / amd64 x86 各自本地构建即可)。
+    # 跨架构(如 x86 构给 arm64 NAS)需 buildx + push 到 registry,见 Dockerfile 顶部说明。
+    image: readflow:0.3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: readflow
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./books-library:/books-library
+      - ./data:/data
+    # 元数据 API key 从 .env 注入(enrich 需要;无 key 也能跑,只是不补全书目信息)
+    env_file:
+      - .env
+    environment:
+      - READFLOW_HOST=0.0.0.0
+      - READFLOW_PORT=8765

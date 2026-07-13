@@ -1,6 +1,6 @@
 [project]
 name = "readflow"
-version = "0.1.0"
+version = "0.3.0"
 description = "书舟 - 基于 NAS 的私人阅读服务"
 requires-python = ">=3.11"
 dependencies = [
