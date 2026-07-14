@@ -512,3 +512,30 @@ class TestDeleteBook:
         trash = tmp_library / ".trash"
         trashed = list(trash.glob("*"))
         assert len(trashed) == 2, f"回收站应保留两本同名书,实际 {len(trashed)}"
+
+
+class TestReaderBackButton:
+    """阅读页 #back 返回按钮:应回书架首页 /,不是 history.back()。
+
+    history.back() 是浏览器历史回退,行为不确定:
+    - 从 书架→详情页→阅读页 进来,只退到详情页而非书架
+    - 直接打开阅读页链接(无历史)时卡死,按钮无反应
+    用户预期"返回"= 回书架。
+    """
+
+    def test_back_button_goes_to_home_not_history_back(self, client, tmp_library):
+        """reader.js 的 #back 处理应是 location.href='/',不含 history.back()。"""
+        bid = ingest.ingest_file(_first_sample())
+        # /read/{id} 页面注入 reader.js,返回逻辑在 reader.js 里
+        r = client.get(f"/read/{bid}")
+        assert r.status_code == 200
+        assert "reader.js" in r.text, "阅读页应加载 reader.js"
+
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # 返回按钮不应依赖浏览器历史(行为不确定、无历史时卡死)
+        assert "history.back()" not in js, \
+            "#back 不应使用 history.back();应 location.href='/' 回书架"
+        # 应明确跳转书架首页
+        assert "location.href = '/'" in js or "location.href='/'" in js, \
+            "#back 应 location.href='/' 回书架首页"
