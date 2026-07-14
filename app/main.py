@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import mimetypes
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -13,6 +14,15 @@ from fastapi.staticfiles import StaticFiles
 from . import db, ingest, watcher
 from .config import LIBRARY_DIR, STATIC_DIR
 from .routes import library, reader, settings
+
+# 字体 MIME:Debian slim 的 mime 数据库不认 .ttf/.otf/.woff(.woff2),
+# StaticFiles 会回退 application/octet-stream;Chrome 对 @font-face 的 src
+# 严格校验 MIME,octet-stream 会被拒 → 字体不生效(显示默认 serif)。
+# macOS 本地 mime 库有 .ttf,故本地正常、Docker 内失效。显式补上。
+mimetypes.add_type("font/ttf", ".ttf")
+mimetypes.add_type("font/otf", ".otf")
+mimetypes.add_type("font/woff", ".woff")
+mimetypes.add_type("font/woff2", ".woff2")
 
 
 @asynccontextmanager
