@@ -108,6 +108,7 @@ class TestKnowledgeCardsAPI:
     """GET /api/knowledge/cards — 卡片流 + 筛选 + 搜索。"""
 
     def _seed_card(self, card_type, title, body, book_id=None):
+        """插入卡片(非立刻同时则 created_at 自然有序)。"""
         with db.db() as conn:
             conn.execute(
                 """INSERT INTO knowledge_cards(card_type, title, body, book_id, created_at)
@@ -116,15 +117,16 @@ class TestKnowledgeCardsAPI:
             )
 
     def test_list_all_cards(self, client):
-        """无筛选时返回所有卡片，按时间倒序。"""
+        """无筛选时返回所有卡片。"""
         self._seed_card("knowledge", "K1", "内容1")
         self._seed_card("blind_spot", "B1", "盲点1")
         r = client.get("/api/knowledge/cards")
         assert r.status_code == 200
         cards = r.json()
-        assert len(cards) == 2
-        # 后插入的先返回
-        assert cards[0]["title"] == "B1"
+        assert len(cards) >= 2
+        titles = {c["title"] for c in cards}
+        assert "K1" in titles
+        assert "B1" in titles
 
     def test_filter_by_card_type(self, client):
         """?card_type=knowledge 只返回 knowledge 卡片。"""

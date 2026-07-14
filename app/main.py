@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import db, ingest, watcher
 from .config import LIBRARY_DIR, STATIC_DIR
-from .routes import library, reader, settings
+from .routes import knowledge, library, reader, settings
 
 # 字体 MIME:Debian slim 的 mime 数据库不认 .ttf/.otf/.woff(.woff2),
 # StaticFiles 会回退 application/octet-stream;Chrome 对 @font-face 的 src
@@ -41,6 +41,7 @@ app.include_router(library.router)
 app.include_router(library.pages)
 app.include_router(reader.router)
 app.include_router(settings.router)
+app.include_router(knowledge.router)
 
 
 @app.get("/api/health")
