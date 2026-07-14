@@ -213,7 +213,14 @@ async function applyTypography(s) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(s),
   }).then(r => r.json())
-  view.renderer?.setStyles?.(r.css)
+  // foliate 用 blob: URL 的 iframe 渲染 epub,@font-face 里的绝对路径
+  // url('/static/...') 在 blob 上下文会解析成 blob origin 的根(无效)→
+  // 字体零请求、静默失败。补成完整 origin URL,blob iframe 才能正确加载。
+  const css = r.css.replace(
+    /url\(['"]?\/static\//g,
+    `url('${location.origin}/static/`,
+  )
+  view.renderer?.setStyles?.(css)
 }
 
 // 字体清单 → 纸片按钮(用各字体自身渲染,所见即所得)
