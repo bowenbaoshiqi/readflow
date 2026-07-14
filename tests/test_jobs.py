@@ -64,7 +64,7 @@ def _mock_glm_parse_recommendation(title="推荐书", reason="基于知识点"):
         "title": title,
         "author": "某作者",
         "reason": reason,
-        "summary": f"这是{title}的200-400字简介,介绍了这本书的核心内容和价值。",
+        "summary": f"这是{title}的简介。" + "这本书深入探讨了相关主题，为读者提供了全新的视角和理解框架。内容包括核心概念阐述、案例分析、以及实践指导。" * 3,
         "isbn": "9780000000001",
     }
 
@@ -243,21 +243,21 @@ class TestDailyJobFullFlow:
 class TestDailyJobRetry:
     """API 调用串行、有间隔、失败重试 2 次。"""
 
-    def test_search_book_retries_on_failure(self):
-        """搜索失败应重试 2 次(共 3 次尝试)。"""
-        from app.jobs import _search_book
+    def test_do_websearch_retries_on_failure(self):
+        """_do_websearch 调用失败应重试 2 次(共 3 次 HTTP 请求)。"""
+        import app.jobs as jobs_mod
+        import httpx
 
         attempts = [0]
 
-        def track_websearch(parent):
+        def _flaky_post(*args, **kwargs):
             attempts[0] += 1
-            raise Exception("rate limited")
+            raise httpx.HTTPError("rate limited")
 
-        with patch("app.jobs._call_glm") as mock_glm, \
-             patch("app.jobs._do_websearch", side_effect=track_websearch), \
-             patch("time.sleep"):  # 不真等
+        with patch.object(jobs_mod.httpx, "post", side_effect=_flaky_post), \
+             patch.object(jobs_mod.time, "sleep"):  # 不真等
             try:
-                _search_book({"title": "K1", "body": "test"})
+                jobs_mod._do_websearch("test query")
             except Exception:
                 pass
 
