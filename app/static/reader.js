@@ -140,7 +140,7 @@ document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
   }
 })
 
-document.getElementById('back').onclick = () => history.back()
+document.getElementById('back').onclick = () => location.href = '/'
 document.getElementById('toc-btn').onclick = async () => {
   // 简单目录:弹出章节列表
   const toc = view.book?.toc || []
