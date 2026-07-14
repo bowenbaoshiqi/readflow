@@ -14,6 +14,12 @@ viewer.append(view)
 
 let currentLocation = null  // relocate 事件的 detail
 
+// ---- 阅读会话:记录起止 CFI,关书时 POST reading-session ----
+let sessionStartCFI = null
+let sessionEndCFI = null
+let sessionPercentFrom = null
+let sessionPercentTo = null
+
 // ---- 打开书籍 + 恢复进度 + 渲染已有划线 ----
 async function init() {
   console.log('[readflow] opening book', BOOK_ID, 'from', BASE)
@@ -49,6 +55,13 @@ view.addEventListener('draw-annotation', e => {
 view.addEventListener('relocate', e => {
   const { cfi, fraction, index } = e.detail
   currentLocation = e.detail
+  // 记录会话起止 CFI
+  if (sessionStartCFI === null) {
+    sessionStartCFI = cfi
+    sessionPercentFrom = fraction || 0
+  }
+  sessionEndCFI = cfi
+  sessionPercentTo = fraction || 0
   document.getElementById('progress').textContent = `${Math.round((fraction || 0) * 100)}%`
   fetch(`${BASE}/api/books/${BOOK_ID}/progress`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -140,7 +153,7 @@ document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
   }
 })
 
-document.getElementById('back').onclick = () => history.back()
+document.getElementById('back').onclick = () => location.href = '/'
 document.getElementById('toc-btn').onclick = async () => {
   // 简单目录:弹出章节列表
   const toc = view.book?.toc || []
@@ -176,6 +189,24 @@ init().catch(e => {
   d.textContent = '打开书籍失败: ' + (e?.stack || e)
   document.getElementById('viewer').append(d)
 })
+
+// ---- 关书:POST reading-session ----
+async function postReadingSession() {
+  if (!sessionStartCFI || sessionStartCFI === sessionEndCFI) return
+  try {
+    await fetch(`${BASE}/api/books/${BOOK_ID}/reading-session`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_cfi: sessionStartCFI,
+        end_cfi: sessionEndCFI,
+        percent_from: sessionPercentFrom,
+        percent_to: sessionPercentTo,
+      }),
+      keepalive: true,
+    })
+  } catch {}
+}
+window.addEventListener('beforeunload', postReadingSession)
 
 // ---- 排版设置:面板 + foliate setStyles 注入 + localStorage 持久化 ----
 const TYPO_KEY = 'readflow:typography'
