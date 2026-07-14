@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS highlights (
 );
 
 CREATE INDEX IF NOT EXISTS idx_highlights_book ON highlights(book_id);
+
+CREATE TABLE IF NOT EXISTS reading_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    start_cfi       TEXT,
+    end_cfi         TEXT,
+    text            TEXT NOT NULL,
+    percent_from    REAL,
+    percent_to      REAL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

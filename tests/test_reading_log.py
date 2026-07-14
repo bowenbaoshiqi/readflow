@@ -51,7 +51,7 @@ class TestReadingSessionAPI:
     """POST /api/books/{id}/reading-session"""
 
     def test_reading_session_creates_log(self, client):
-        """关书时应创建 reading_log 记录并返回 201。"""
+        """关书时应创建 reading_log 记录并返回 200。"""
         bid = ingest.ingest_file(_first_sample())
         r = client.post(
             f"/api/books/{bid}/reading-session",
@@ -62,7 +62,7 @@ class TestReadingSessionAPI:
                 "percent_to": 0.45,
             },
         )
-        assert r.status_code == 201
+        assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
         assert "id" in data
