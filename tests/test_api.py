@@ -555,3 +555,15 @@ class TestReaderSessionPost:
             "reader.js 应记录起始 CFI"
         assert "beforeunload" in js or "visibilitychange" in js or "pagehide" in js, \
             "reader.js 应在页面关闭时触发"
+
+
+class TestHomepageCards:
+    """主页应包含知识卡片展示。"""
+
+    def test_homepage_has_knowledge_reference(self, client):
+        """主页 HTML 应引用知识 API 端点或知识相关元素。"""
+        r = client.get("/")
+        assert r.status_code == 200
+        html = r.text.lower()
+        assert "knowledge" in html or "卡片" in html or "card" in html, \
+            "主页应包含知识/卡片相关内容"
