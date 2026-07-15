@@ -567,3 +567,38 @@ class TestHomepageCards:
         html = r.text.lower()
         assert "knowledge" in html or "卡片" in html or "card" in html, \
             "主页应包含知识/卡片相关内容"
+
+    def test_knowledge_page_shows_parent_title_on_recommendation(self, client):
+        """推荐卡片应显著标注它推进的盲点/知识点标题(关联父卡片)。
+
+        设计 5.3:recommendation 卡片下方展示「← 关联知识点/盲点:{parent.title}」。
+        后端 API 应在 recommendation 卡片上带 parent_title 字段(JOIN 父卡片),
+        供前端显著标注关联的盲点/知识点 + 推进书名。
+        """
+        from app import db
+        with db.db() as conn:
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body, created_at)
+                   VALUES(?,?,?,datetime('now'))""",
+                ("blind_spot", "缺少认知心理学视角", "盲点内容"),
+            )
+            parent_id = conn.execute(
+                "SELECT id FROM knowledge_cards WHERE title='缺少认知心理学视角'"
+            ).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body,
+                   parent_card_id, recommend_book, created_at)
+                   VALUES(?,?,?,?,?,datetime('now'))""",
+                ("recommendation", "思考快与慢", "推荐理由", parent_id,
+                 '{"title":"思考，快与慢","author":"卡尼曼","reason":"r","summary":"s","isbn":"1"}'),
+            )
+
+        r = client.get("/api/knowledge/cards?card_type=recommendation")
+        assert r.status_code == 200
+        cards = r.json()
+        rec = next(c for c in cards if c["card_type"] == "recommendation")
+        # 推进书的名字(从 recommend_book 解析)
+        assert rec["recommend_book"]  # 有推进书 JSON
+        # 关联的盲点/知识点标题(后端 JOIN 注入)
+        assert rec.get("parent_title") == "缺少认知心理学视角", \
+            "推荐卡片应带 parent_title 标注它推进的盲点/知识点"
