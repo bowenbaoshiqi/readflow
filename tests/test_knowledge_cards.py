@@ -161,3 +161,56 @@ class TestKnowledgeCardsAPI:
         r = client.get("/api/knowledge/cards")
         assert r.status_code == 200
         assert r.json() == []
+
+
+class TestKnowledgeCardsDatePaging:
+    """按日期分页:?date= 筛选 + /dates 日期列表。"""
+
+    def _seed_card_on(self, card_type, title, date_str, book_id=None):
+        """插入卡片,指定 created_at 日期(YYYY-MM-DD HH:MM:SS)。"""
+        with db.db() as conn:
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body, book_id, created_at)
+                   VALUES(?,?,?,?,?)""",
+                (card_type, title, "内容", book_id, f"{date_str} 10:00:00"),
+            )
+
+    def test_filter_by_date(self, client):
+        """?date=YYYY-MM-DD 只返回该日卡片。"""
+        self._seed_card_on("knowledge", "K1", "2026-07-14")
+        self._seed_card_on("knowledge", "K2", "2026-07-15")
+        r = client.get("/api/knowledge/cards?date=2026-07-14")
+        assert r.status_code == 200
+        cards = r.json()
+        assert len(cards) == 1
+        assert cards[0]["title"] == "K1"
+
+    def test_filter_by_date_and_card_type(self, client):
+        """?date= + ?card_type= 组合筛选。"""
+        self._seed_card_on("knowledge", "K1", "2026-07-14")
+        self._seed_card_on("blind_spot", "B1", "2026-07-14")
+        self._seed_card_on("knowledge", "K2", "2026-07-15")
+        r = client.get("/api/knowledge/cards?date=2026-07-14&card_type=knowledge")
+        assert r.status_code == 200
+        cards = r.json()
+        assert len(cards) == 1
+        assert cards[0]["title"] == "K1"
+
+    def test_dates_endpoint_returns_distinct_dates(self, client):
+        """GET /api/knowledge/dates 返回有卡片的日期列表(去重+倒序)。"""
+        self._seed_card_on("knowledge", "K1", "2026-07-14")
+        self._seed_card_on("knowledge", "K2", "2026-07-14")  # 同日再插
+        self._seed_card_on("blind_spot", "B1", "2026-07-15")
+        r = client.get("/api/knowledge/dates")
+        assert r.status_code == 200
+        dates = r.json()
+        assert dates == ["2026-07-15", "2026-07-14"]  # 倒序去重
+
+    def test_dates_endpoint_filter_by_card_type(self, client):
+        """GET /api/knowledge/dates?card_type= 只返回该类型卡片的日期。"""
+        self._seed_card_on("knowledge", "K1", "2026-07-14")
+        self._seed_card_on("blind_spot", "B1", "2026-07-15")
+        r = client.get("/api/knowledge/dates?card_type=knowledge")
+        assert r.status_code == 200
+        dates = r.json()
+        assert dates == ["2026-07-14"]  # 只有 knowledge 那天
