@@ -11,9 +11,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from apscheduler.schedulers.background import BackgroundScheduler
+
 from . import db, ingest, watcher
 from .config import LIBRARY_DIR, STATIC_DIR
-from .routes import library, reader, settings
+from .routes import knowledge as knowledge_module, library, reader, settings
 
 # 字体 MIME:Debian slim 的 mime 数据库不认 .ttf/.otf/.woff(.woff2),
 # StaticFiles 会回退 application/octet-stream;Chrome 对 @font-face 的 src
@@ -31,7 +33,16 @@ async def lifespan(app: FastAPI):
     LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
     w = watcher.start_watcher(LIBRARY_DIR)
     print(f"[readflow] 监听书库: {LIBRARY_DIR}")
+
+    # 每日凌晨批处理(知识卡片 + 推荐)
+    from .jobs import run_daily_job
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(run_daily_job, "cron", hour=2, minute=0, id="daily_cards")
+    scheduler.start()
+    print("[readflow] 每日知识卡片批处理已注册 (02:00)")
+
     yield
+    scheduler.shutdown(wait=False)
     w.stop()
 
 
@@ -41,6 +52,7 @@ app.include_router(library.router)
 app.include_router(library.pages)
 app.include_router(reader.router)
 app.include_router(settings.router)
+app.include_router(knowledge_module.router)
 
 
 @app.get("/api/health")
@@ -51,6 +63,198 @@ def health():
     只确认进程存活、能响应 HTTP。
     """
     return {"ok": True}
+
+
+@app.get("/knowledge", response_class=HTMLResponse)
+def knowledge_page(request: Request):
+    """知识卡片流页面:按时间倒序展示 knowledge_cards + 筛选 + 搜索。"""
+    base = str(request.base_url).rstrip("/")
+    return f"""<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识卡片 — 书舟</title>
+<link rel="stylesheet" href="{base}/static/css/index.css">
+<style>
+.tabs {{ display:flex; gap:0; padding:12px 12px 0; max-width:700px; margin:0 auto; border-bottom:1px solid #e0e0e0; }}
+.tab {{ padding:8px 18px; font-size:15px; color:#666; cursor:pointer; border-bottom:2px solid transparent; }}
+.tab.active {{ color:#1a73e8; border-bottom-color:#1a73e8; font-weight:bold; }}
+.date-bar {{ display:flex; gap:8px; padding:12px; flex-wrap:wrap; max-width:700px; margin:0 auto; align-items:center; }}
+.date-chip {{ padding:5px 12px; font-size:13px; color:#555; background:#f0f0f0;
+  border-radius:14px; cursor:pointer; }}
+.date-chip.active {{ background:#1a73e8; color:#fff; font-weight:bold; }}
+.month-chip {{ padding:5px 12px; font-size:13px; color:#555; background:#e8e8e8;
+  border-radius:14px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; }}
+.month-chip .mc-count {{ font-size:11px; color:#888; }}
+.month-chip.expanded {{ background:#d0d0d0; }}
+.group-label {{ font-size:12px; color:#999; margin-right:4px; }}
+.month-days {{ display:inline-flex; gap:6px; flex-wrap:wrap; }}
+.filters {{ display:flex; gap:8px; padding:0 12px 8px; align-items:center; flex-wrap:wrap; max-width:700px; margin:0 auto; }}
+.filters input {{ padding:6px 10px; font-size:14px; border:1px solid #ccc; border-radius:4px; flex:1; }}
+.card-stream {{ max-width:700px; margin:0 auto; padding:0 12px 24px; }}
+.kc-card {{ background:#fff; border-radius:8px; padding:16px; margin-bottom:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1); }}
+.kc-card .kc-type {{ font-size:12px; color:#888; margin-bottom:4px; }}
+.kc-card .kc-title {{ font-size:16px; font-weight:bold; margin-bottom:8px; }}
+.kc-card .kc-body {{ font-size:14px; line-height:1.6; color:#333; }}
+.kc-card .kc-meta {{ font-size:12px; color:#999; margin-top:8px; }}
+.kc-card .kc-recbook {{ font-size:14px; font-weight:bold; color:#1a73e8; margin-bottom:4px; }}
+.kc-card .kc-parent {{ display:inline-block; font-size:13px; color:#b0006e;
+  background:#fce4ec; padding:2px 8px; border-radius:10px; }}
+</style>
+</head><body>
+<header>
+  <h1><a href="/" style="color:inherit;text-decoration:none">书舟</a></h1>
+  <nav>
+    <a href="/">书库</a>
+    <a href="/knowledge" style="font-weight:bold">知识卡片</a>
+  </nav>
+</header>
+<div class="tabs">
+  <div class="tab active" data-type="knowledge" onclick="switchTab('knowledge')">知识点</div>
+  <div class="tab" data-type="blind_spot" onclick="switchTab('blind_spot')">盲点</div>
+  <div class="tab" data-type="recommendation" onclick="switchTab('recommendation')">推荐</div>
+</div>
+<div class="date-bar" id="date-bar">加载中…</div>
+<div class="filters">
+  <input id="search-input" type="search" placeholder="搜索卡片…" oninput="loadCards()">
+</div>
+<div class="card-stream" id="card-stream">加载中…</div>
+<script>
+var curType = 'knowledge';
+var curDate = null;
+var dates = {{this_week: [], older_months: []}};
+var expandedMonths = {{}};  // month -> [天级日期] (已展开的)
+
+async function loadDates() {{
+  var params = new URLSearchParams();
+  params.set('card_type', curType);
+  try {{
+    var r = await fetch('{base}/api/knowledge/dates?' + params);
+    dates = await r.json();
+  }} catch(e) {{ dates = {{this_week: [], older_months: []}}; }}
+  expandedMonths = {{}};
+  // 默认最新日期:本周有则取本周最新,否则取最近月展开后最新
+  if (dates.this_week.length) {{
+    curDate = dates.this_week[0];
+  }} else if (dates.older_months.length) {{
+    await expandMonth(dates.older_months[0].month);
+    curDate = expandedMonths[dates.older_months[0].month][0] || null;
+  }} else {{
+    curDate = null;
+  }}
+  renderDateBar();
+}}
+
+async function expandMonth(month) {{
+  if (expandedMonths[month]) return;  // 已加载
+  var params = new URLSearchParams();
+  params.set('card_type', curType);
+  params.set('month', month);
+  try {{
+    var r = await fetch('{base}/api/knowledge/dates?' + params);
+    expandedMonths[month] = await r.json();
+  }} catch(e) {{ expandedMonths[month] = []; }}
+}}
+
+async function toggleMonth(month) {{
+  if (expandedMonths[month]) {{
+    delete expandedMonths[month];  // 折叠
+  }} else {{
+    await expandMonth(month);  // 展开
+  }}
+  renderDateBar();
+}}
+
+function renderDateBar() {{
+  var bar = document.getElementById('date-bar');
+  var html = '';
+  // 本周
+  if (dates.this_week.length) {{
+    html += '<span class="group-label">本周</span>';
+    html += dates.this_week.map(function(d) {{
+      var cls = 'date-chip' + (d === curDate ? ' active' : '');
+      return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d.slice(5) + '</span>';
+    }}).join('');
+  }}
+  // 更早:月级 chip,点展开天
+  if (dates.older_months.length) {{
+    if (dates.this_week.length) html += '<span style="color:#ccc">|</span>';
+    html += '<span class="group-label">更早</span>';
+    dates.older_months.forEach(function(m) {{
+      var expanded = !!expandedMonths[m.month];
+      html += '<span class="month-chip' + (expanded ? ' expanded' : '') + '" onclick="toggleMonth(\\'' + m.month + '\\')">' + m.month + ' <span class="mc-count">(' + m.count + ')</span></span>';
+      if (expanded) {{
+        var days = expandedMonths[m.month] || [];
+        html += '<span class="month-days">' + days.map(function(d) {{
+          var cls = 'date-chip' + (d === curDate ? ' active' : '');
+          return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d.slice(5) + '</span>';
+        }}).join('') + '</span>';
+      }}
+    }});
+  }}
+  if (!dates.this_week.length && !dates.older_months.length) {{
+    html = '<span style="color:#888">暂无卡片</span>';
+  }}
+  bar.innerHTML = html;
+}}
+
+function switchTab(type) {{
+  curType = type;
+  document.querySelectorAll('.tab').forEach(function(t) {{
+    t.classList.toggle('active', t.dataset.type === type);
+  }});
+  loadDates().then(loadCards);
+}}
+
+function switchDate(d) {{
+  curDate = d;
+  renderDateBar();
+  loadCards();
+}}
+
+async function loadCards() {{
+  var q = document.getElementById('search-input').value;
+  var params = new URLSearchParams();
+  params.set('card_type', curType);
+  if (curDate) params.set('date', curDate);
+  if (q) params.set('q', q);
+  try {{
+    var r = await fetch('{base}/api/knowledge/cards?' + params);
+    var cards = await r.json();
+  }} catch(e) {{ document.getElementById('card-stream').textContent = '加载失败'; return; }}
+  if (!cards.length) {{ document.getElementById('card-stream').innerHTML = '<p style="color:#888;text-align:center;padding:40px">该日期暂无卡片</p>'; return; }}
+  var labels = {{'knowledge':'知识点','blind_spot':'盲点','recommendation':'推荐'}};
+  var html = '';
+  for (var c of cards) {{
+    var typeLabel = labels[c.card_type] || c.card_type;
+    var meta = '';
+    if (c.recommend_book) {{
+      try {{
+        var rb = JSON.parse(c.recommend_book);
+        var bookName = rb.title || '';
+        var ptype = c.parent_card_type;
+        var recKind = ptype === 'blind_spot' ? '盲点推荐'
+                    : ptype === 'knowledge' ? '知识点推荐' : '';
+        var parentTag = c.parent_title
+          ? '<span class="kc-parent">' + (recKind ? recKind + ' · ' : '')
+            + c.parent_title + '</span>'
+          : (recKind ? '<span class="kc-parent">' + recKind + '</span>' : '');
+        meta = '<div class="kc-recbook">📖 推荐书：' + bookName
+          + (rb.author ? ' / ' + rb.author : '') + '</div>' + parentTag;
+      }} catch(e) {{}}
+    }}
+    html += '<div class="kc-card">' +
+      '<div class="kc-type">' + typeLabel + '</div>' +
+      '<div class="kc-title">' + (c.title || '') + '</div>' +
+      '<div class="kc-body">' + (c.body || '').slice(0, 300) + '</div>' +
+      (meta ? '<div class="kc-meta">' + meta + '</div>' : '') +
+      '</div>';
+  }}
+  document.getElementById('card-stream').innerHTML = html;
+}}
+loadDates().then(loadCards);
+</script>
+</body></html>"""
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -90,6 +294,13 @@ def index(request: Request):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>书舟</title><link rel="stylesheet" href="{base}/static/css/index.css">
 </head><body>
-<header><h1>书舟</h1><span class="hint">把 epub 放入 books-library/ 自动入库</span></header>
+<header>
+  <h1>书舟</h1>
+  <nav>
+    <a href="/">书库</a>
+    <a href="/knowledge">知识卡片</a>
+  </nav>
+  <span class="hint">把 epub 放入 books-library/ 自动入库</span>
+</header>
 <main class="grid">{''.join(cards)}</main>
 </body></html>"""

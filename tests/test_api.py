@@ -533,9 +533,100 @@ class TestReaderBackButton:
 
         from pathlib import Path
         js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
-        # 返回按钮不应依赖浏览器历史(行为不确定、无历史时卡死)
         assert "history.back()" not in js, \
             "#back 不应使用 history.back();应 location.href='/' 回书架"
-        # 应明确跳转书架首页
         assert "location.href = '/'" in js or "location.href='/'" in js, \
             "#back 应 location.href='/' 回书架首页"
+
+
+class TestReaderSessionPost:
+    """reader.js 关书时应 POST reading-session。
+
+    源码契约断言:reader.js 含 reading-session 端点 + beforeunload 处理。
+    不做 e2e,但验证源码存在必要结构。
+    """
+
+    def test_reader_js_has_session_post(self):
+        """reader.js 应含 /reading-session 端点 URL 和 beforeunload 逻辑。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        assert "/reading-session" in js, \
+            "reader.js 应含 POST /api/books/{id}/reading-session"
+        assert "start_cfi" in js or "START_CFI" in js, \
+            "reader.js 应记录起始 CFI"
+        assert "beforeunload" in js or "visibilitychange" in js or "pagehide" in js, \
+            "reader.js 应在页面关闭时触发"
+
+
+class TestHomepageCards:
+    """主页应包含知识卡片展示。"""
+
+    def test_homepage_has_knowledge_reference(self, client):
+        """主页 HTML 应引用知识 API 端点或知识相关元素。"""
+        r = client.get("/")
+        assert r.status_code == 200
+        html = r.text.lower()
+        assert "knowledge" in html or "卡片" in html or "card" in html, \
+            "主页应包含知识/卡片相关内容"
+
+    def test_knowledge_page_shows_parent_title_on_recommendation(self, client):
+        """推荐卡片应显著标注:推荐书名 + 关联的盲点/知识点标题 + 推荐类型。
+
+        - 术语用"推荐书"(不是"推进书")
+        - 区分"盲点推荐"vs"知识点推荐":带 parent_card_type 标识父卡片类型
+        - 带 parent_title 标注关联的盲点/知识点标题
+        """
+        from app import db
+        with db.db() as conn:
+            # 盲点父卡 + 其推荐
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body, created_at)
+                   VALUES(?,?,?,datetime('now'))""",
+                ("blind_spot", "缺少认知心理学视角", "盲点内容"),
+            )
+            blind_id = conn.execute(
+                "SELECT id FROM knowledge_cards WHERE title='缺少认知心理学视角'"
+            ).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body,
+                   parent_card_id, recommend_book, created_at)
+                   VALUES(?,?,?,?,?,datetime('now'))""",
+                ("recommendation", "思考快与慢", "推荐理由", blind_id,
+                 '{"title":"思考，快与慢","author":"卡尼曼","reason":"r","summary":"s","isbn":"1"}'),
+            )
+            # 知识点父卡 + 其推荐
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body, created_at)
+                   VALUES(?,?,?,datetime('now'))""",
+                ("knowledge", "幸存者偏差", "知识点内容"),
+            )
+            know_id = conn.execute(
+                "SELECT id FROM knowledge_cards WHERE title='幸存者偏差'"
+            ).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body,
+                   parent_card_id, recommend_book, created_at)
+                   VALUES(?,?,?,?,?,datetime('now'))""",
+                ("recommendation", "黑天鹅", "推荐理由", know_id,
+                 '{"title":"黑天鹅","author":"塔勒布","reason":"r","summary":"s","isbn":"2"}'),
+            )
+
+        r = client.get("/api/knowledge/cards?card_type=recommendation")
+        assert r.status_code == 200
+        cards = r.json()
+        rec_blind = next(c for c in cards if c["title"] == "思考快与慢")
+        rec_know = next(c for c in cards if c["title"] == "黑天鹅")
+
+        # 推荐书(不是"推进书")
+        assert rec_blind["recommend_book"]
+        assert rec_know["recommend_book"]
+
+        # 关联的盲点/知识点标题
+        assert rec_blind.get("parent_title") == "缺少认知心理学视角"
+        assert rec_know.get("parent_title") == "幸存者偏差"
+
+        # 区分盲点推荐 vs 知识点推荐
+        assert rec_blind.get("parent_card_type") == "blind_spot", \
+            "基于盲点的推荐应标识 parent_card_type=blind_spot"
+        assert rec_know.get("parent_card_type") == "knowledge", \
+            "基于知识点的推荐应标识 parent_card_type=knowledge"

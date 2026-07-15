@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
 from .. import db
+from ..epub_text import extract_text
 
 router = APIRouter(tags=["reader"])
 
@@ -411,3 +412,50 @@ def del_highlight(hid: int):
     with db.db() as conn:
         conn.execute("DELETE FROM highlights WHERE id=?", (hid,))
     return {"ok": True}
+
+
+# ---------- 阅读会话日志 ----------
+class ReadingSessionIn(BaseModel):
+    start_cfi: str
+    end_cfi: str
+    percent_from: float
+    percent_to: float
+
+
+@router.post("/api/books/{book_id}/reading-session")
+def create_reading_session(book_id: int, body: ReadingSessionIn):
+    """记录一次阅读会话:关书时前端 POST,后端从 epub 提取 CFI 区间纯文本。
+
+    若 start_cfi == end_cfi(未翻页),不存记录,返回 skipped=True。
+    """
+    if body.start_cfi == body.end_cfi:
+        return {"ok": True, "skipped": True}
+
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT original_path, epub_path FROM books WHERE id=? AND ingest_status='ready'",
+            (book_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "book not found")
+
+    epub_path = Path(row["original_path"])
+    if not epub_path.is_file() and row["epub_path"]:
+        epub_path = Path(row["epub_path"])
+    if not epub_path.is_file():
+        raise HTTPException(404, "file missing on disk")
+
+    text = extract_text(str(epub_path), body.start_cfi, body.end_cfi)
+    if not text.strip():
+        return {"ok": True, "skipped": True, "reason": "empty text"}
+
+    with db.db() as conn:
+        cur = conn.execute(
+            """INSERT INTO reading_log(book_id, start_cfi, end_cfi, text,
+               percent_from, percent_to)
+               VALUES(?,?,?,?,?,?)""",
+            (book_id, body.start_cfi, body.end_cfi, text,
+             body.percent_from, body.percent_to),
+        )
+        log_id = cur.lastrowid
+    return {"ok": True, "id": log_id}

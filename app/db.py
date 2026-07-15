@@ -49,6 +49,47 @@ CREATE TABLE IF NOT EXISTS highlights (
 );
 
 CREATE INDEX IF NOT EXISTS idx_highlights_book ON highlights(book_id);
+
+CREATE TABLE IF NOT EXISTS reading_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id         INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    start_cfi       TEXT,
+    end_cfi         TEXT,
+    text            TEXT NOT NULL,
+    percent_from    REAL,
+    percent_to      REAL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_cards (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_type       TEXT NOT NULL,                      -- knowledge / blind_spot / recommendation
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    book_id         INTEGER REFERENCES books(id) ON DELETE SET NULL,
+    source_type     TEXT,                               -- reading_log / highlight (仅 knowledge)
+    source_ids      TEXT,                               -- JSON 数组 (仅 knowledge)
+    parent_card_id  INTEGER REFERENCES knowledge_cards(id) ON DELETE SET NULL,
+    recommend_book  TEXT,                               -- JSON {title, author, reason, summary, isbn}
+    card_metadata   TEXT,                               -- JSON 弹性字段
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_cards_fts USING fts5(
+    title, body, content='knowledge_cards', content_rowid='id'
+);
+
+-- FTS 同步触发器(幂等:INSERT/UPDATE/DELETE 自动同步)
+CREATE TRIGGER IF NOT EXISTS kc_ai AFTER INSERT ON knowledge_cards BEGIN
+    INSERT INTO knowledge_cards_fts(rowid, title, body) VALUES(new.id, new.title, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS kc_ad AFTER DELETE ON knowledge_cards BEGIN
+    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, body) VALUES('delete', old.id, old.title, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS kc_au AFTER UPDATE ON knowledge_cards BEGIN
+    INSERT INTO knowledge_cards_fts(knowledge_cards_fts, rowid, title, body) VALUES('delete', old.id, old.title, old.body);
+    INSERT INTO knowledge_cards_fts(rowid, title, body) VALUES(new.id, new.title, new.body);
+END;
 """
 
 
