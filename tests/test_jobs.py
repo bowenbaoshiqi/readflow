@@ -33,9 +33,6 @@ def _mock_glm_response(knowledge_count=5, blind_count=5):
             "card_type": "knowledge",
             "title": f"知识点{i+1}",
             "body": f"这是第{i+1}个知识点的解释",
-            "book_id": 1,
-            "source_type": "reading_log",
-            "source_ids": [1],
         })
     for i in range(blind_count):
         kcs.append({
@@ -262,3 +259,43 @@ class TestDailyJobRetry:
                 pass
 
         assert attempts[0] == 3  # 1 original + 2 retries = 3 attempts
+
+    def test_call_glm_no_retry_on_failure(self):
+        """_call_glm 失败应只调 1 次,不重试(偶发 ReadTimeout 重试无意义)。"""
+        import app.jobs as jobs_mod
+        import httpx
+
+        attempts = [0]
+
+        def _flaky_post(*args, **kwargs):
+            attempts[0] += 1
+            raise httpx.ReadTimeout("read timed out")
+
+        with patch.object(jobs_mod.httpx, "post", side_effect=_flaky_post), \
+             patch.object(jobs_mod.time, "sleep"):  # 即便误重试也不真等
+            try:
+                jobs_mod._call_glm("test prompt")
+            except Exception:
+                pass
+
+        assert attempts[0] == 1  # 只调 1 次,不重试
+
+    def test_call_glm_timeout_is_300(self):
+        """_call_glm 应把 timeout=300 传给 httpx(GLM 偶发慢响应,需长 read timeout)。"""
+        import app.jobs as jobs_mod
+
+        captured = {}
+
+        class _FakeResponse:
+            status_code = 200
+            def json(self):
+                return {"choices": [{"message": {"content": "[]"}}]}
+
+        def _capture_post(*args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return _FakeResponse()
+
+        with patch.object(jobs_mod.httpx, "post", side_effect=_capture_post):
+            jobs_mod._call_glm("test prompt")
+
+        assert captured["timeout"] == 300.0
