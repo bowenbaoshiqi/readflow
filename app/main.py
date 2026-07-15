@@ -84,6 +84,9 @@ def knowledge_page(request: Request):
 .kc-card .kc-title {{ font-size:16px; font-weight:bold; margin-bottom:8px; }}
 .kc-card .kc-body {{ font-size:14px; line-height:1.6; color:#333; }}
 .kc-card .kc-meta {{ font-size:12px; color:#999; margin-top:8px; }}
+.kc-card .kc-recbook {{ font-size:14px; font-weight:bold; color:#1a73e8; margin-bottom:4px; }}
+.kc-card .kc-parent {{ display:inline-block; font-size:13px; color:#b0006e;
+  background:#fce4ec; padding:2px 8px; border-radius:10px; }}
 </style>
 </head><body>
 <header>
@@ -123,8 +126,13 @@ async function loadCards() {{
     if (c.recommend_book) {{
       try {{
         var rb = JSON.parse(c.recommend_book);
-        meta = '推荐: ' + (rb.title || '') + ' / ' + (rb.author || '');
-        if (rb.reason) meta += ' — ' + rb.reason.slice(0, 80);
+        // 显著标注:推进书名 + 关联的盲点/知识点标题
+        var bookName = rb.title || '';
+        var parentTag = c.parent_title
+          ? '<span class="kc-parent">← 推进盲点/知识点：' + c.parent_title + '</span>'
+          : '';
+        meta = '<div class="kc-recbook">📖 推进书：' + bookName
+          + (rb.author ? ' / ' + rb.author : '') + '</div>' + parentTag;
       }} catch(e) {{}}
     }}
     html += '<div class="kc-card">' +

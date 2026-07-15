@@ -15,39 +15,45 @@ def list_cards(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    """卡片流:按时间倒序,支持按 card_type 筛选 + 关键词搜索 title/body。"""
+    """卡片流:按时间倒序,支持按 card_type 筛选 + 关键词搜索 title/body。
+
+    recommendation 卡片额外带 parent_title(JOIN 父卡片),供前端显著标注
+    它推进的盲点/知识点标题。
+    """
+    # 基础查询:kc.* + 父卡片标题(仅 recommendation 有 parent_card_id)
+    base_select = """SELECT kc.*, p.title AS parent_title
+                     FROM knowledge_cards kc
+                     LEFT JOIN knowledge_cards p ON p.id = kc.parent_card_id"""
+    order_limit = "ORDER BY kc.created_at DESC LIMIT ? OFFSET ?"
+
     with db.get_conn() as conn:
         if q:
             pattern = f"%{q}%"
             if card_type:
                 rows = conn.execute(
-                    """SELECT * FROM knowledge_cards
-                       WHERE card_type = ? AND (title LIKE ? OR body LIKE ?)
-                       ORDER BY created_at DESC
-                       LIMIT ? OFFSET ?""",
+                    f"""{base_select}
+                       WHERE kc.card_type = ? AND (kc.title LIKE ? OR kc.body LIKE ?)
+                       {order_limit}""",
                     (card_type, pattern, pattern, limit, offset),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT * FROM knowledge_cards
-                       WHERE title LIKE ? OR body LIKE ?
-                       ORDER BY created_at DESC
-                       LIMIT ? OFFSET ?""",
+                    f"""{base_select}
+                       WHERE kc.title LIKE ? OR kc.body LIKE ?
+                       {order_limit}""",
                     (pattern, pattern, limit, offset),
                 ).fetchall()
         elif card_type:
             rows = conn.execute(
-                """SELECT * FROM knowledge_cards
-                   WHERE card_type = ?
-                   ORDER BY created_at DESC
-                   LIMIT ? OFFSET ?""",
+                f"""{base_select}
+                   WHERE kc.card_type = ?
+                   {order_limit}""",
                 (card_type, limit, offset),
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT * FROM knowledge_cards
-                   ORDER BY created_at DESC
-                   LIMIT ? OFFSET ?""",
+                f"""{base_select}
+                   {order_limit}""",
                 (limit, offset),
             ).fetchall()
 
