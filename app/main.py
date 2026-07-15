@@ -78,10 +78,16 @@ def knowledge_page(request: Request):
 .tabs {{ display:flex; gap:0; padding:12px 12px 0; max-width:700px; margin:0 auto; border-bottom:1px solid #e0e0e0; }}
 .tab {{ padding:8px 18px; font-size:15px; color:#666; cursor:pointer; border-bottom:2px solid transparent; }}
 .tab.active {{ color:#1a73e8; border-bottom-color:#1a73e8; font-weight:bold; }}
-.date-bar {{ display:flex; gap:8px; padding:12px; flex-wrap:wrap; max-width:700px; margin:0 auto; }}
+.date-bar {{ display:flex; gap:8px; padding:12px; flex-wrap:wrap; max-width:700px; margin:0 auto; align-items:center; }}
 .date-chip {{ padding:5px 12px; font-size:13px; color:#555; background:#f0f0f0;
   border-radius:14px; cursor:pointer; }}
 .date-chip.active {{ background:#1a73e8; color:#fff; font-weight:bold; }}
+.month-chip {{ padding:5px 12px; font-size:13px; color:#555; background:#e8e8e8;
+  border-radius:14px; cursor:pointer; display:inline-flex; align-items:center; gap:4px; }}
+.month-chip .mc-count {{ font-size:11px; color:#888; }}
+.month-chip.expanded {{ background:#d0d0d0; }}
+.group-label {{ font-size:12px; color:#999; margin-right:4px; }}
+.month-days {{ display:inline-flex; gap:6px; flex-wrap:wrap; }}
 .filters {{ display:flex; gap:8px; padding:0 12px 8px; align-items:center; flex-wrap:wrap; max-width:700px; margin:0 auto; }}
 .filters input {{ padding:6px 10px; font-size:14px; border:1px solid #ccc; border-radius:4px; flex:1; }}
 .card-stream {{ max-width:700px; margin:0 auto; padding:0 12px 24px; }}
@@ -116,7 +122,8 @@ def knowledge_page(request: Request):
 <script>
 var curType = 'knowledge';
 var curDate = null;
-var dates = [];
+var dates = {{this_week: [], older_months: []}};
+var expandedMonths = {{}};  // month -> [天级日期] (已展开的)
 
 async function loadDates() {{
   var params = new URLSearchParams();
@@ -124,19 +131,71 @@ async function loadDates() {{
   try {{
     var r = await fetch('{base}/api/knowledge/dates?' + params);
     dates = await r.json();
-  }} catch(e) {{ dates = []; }}
-  // 默认最新日期
-  curDate = dates.length ? dates[0] : null;
+  }} catch(e) {{ dates = {{this_week: [], older_months: []}}; }}
+  expandedMonths = {{}};
+  // 默认最新日期:本周有则取本周最新,否则取最近月展开后最新
+  if (dates.this_week.length) {{
+    curDate = dates.this_week[0];
+  }} else if (dates.older_months.length) {{
+    await expandMonth(dates.older_months[0].month);
+    curDate = expandedMonths[dates.older_months[0].month][0] || null;
+  }} else {{
+    curDate = null;
+  }}
+  renderDateBar();
+}}
+
+async function expandMonth(month) {{
+  if (expandedMonths[month]) return;  // 已加载
+  var params = new URLSearchParams();
+  params.set('card_type', curType);
+  params.set('month', month);
+  try {{
+    var r = await fetch('{base}/api/knowledge/dates?' + params);
+    expandedMonths[month] = await r.json();
+  }} catch(e) {{ expandedMonths[month] = []; }}
+}}
+
+async function toggleMonth(month) {{
+  if (expandedMonths[month]) {{
+    delete expandedMonths[month];  // 折叠
+  }} else {{
+    await expandMonth(month);  // 展开
+  }}
   renderDateBar();
 }}
 
 function renderDateBar() {{
   var bar = document.getElementById('date-bar');
-  if (!dates.length) {{ bar.innerHTML = '<span style="color:#888">暂无卡片</span>'; return; }}
-  bar.innerHTML = dates.map(function(d) {{
-    var cls = 'date-chip' + (d === curDate ? ' active' : '');
-    return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d + '</span>';
-  }}).join('');
+  var html = '';
+  // 本周
+  if (dates.this_week.length) {{
+    html += '<span class="group-label">本周</span>';
+    html += dates.this_week.map(function(d) {{
+      var cls = 'date-chip' + (d === curDate ? ' active' : '');
+      return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d.slice(5) + '</span>';
+    }}).join('');
+  }}
+  // 更早:月级 chip,点展开天
+  if (dates.older_months.length) {{
+    if (dates.this_week.length) html += '<span style="color:#ccc">|</span>';
+    html += '<span class="group-label">更早</span>';
+    dates.older_months.forEach(function(m) {{
+      var expanded = !!expandedMonths[m.month];
+      html += '<span class="month-chip' + (expanded ? ' expanded' : '') + '" onclick="toggleMonth(\\'' + m.month + '\\')">' + m.month + ' <span class="mc-count">(' + m.count + ')</span></span>';
+      if (expanded) {{
+        var days = expandedMonths[m.month] || [];
+        html += '<span class="month-days">' + days.map(function(d) {{
+          var cls = 'date-chip' + (d === curDate ? ' active' : '');
+          return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d.slice(5) + '</span>';
+        }}).join('') + '</span>';
+      }}
+    }});
+  }}
+  if (!dates.this_week.length && !dates.older_months.length) {{
+    html = '<span style="color:#888">暂无卡片</span>';
+  }}
+  bar.innerHTML = html;
 }}
 
 function switchTab(type) {{
