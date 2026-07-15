@@ -198,11 +198,8 @@ def _search_book(parent: dict) -> dict:
     else:
         query = f"{parent['title']} 入门书 豆瓣"
 
-    _t0 = time.time()
     search_result = _do_websearch(query)
-    _t_ws = time.time() - _t0
     search_items = search_result.get("search_result") or []
-    print(f"[readflow][probe] websearch {len(search_items)}条 {_t_ws:.1f}s | q={query[:40]}", flush=True)
     digest = " ".join(
         (item.get("content") or "")[:500] for item in search_items[:3]
     )
@@ -224,10 +221,7 @@ def _search_book(parent: dict) -> dict:
         '只返回JSON:{"title":"","author":"","reason":"","summary":"","isbn":""}\n'
     )
 
-    _t1 = time.time()
     content = _call_glm(prompt[:3000])
-    _t_glm = time.time() - _t1
-    print(f"[readflow][probe] glm {_t_glm:.1f}s | 返回{len(content)}字 | title={parent['title'][:20]}", flush=True)
     data = _parse_glm_json(content)
     if isinstance(data, dict):
         return data
@@ -242,17 +236,11 @@ def _generate_recommendations(parents: list[dict]) -> list[dict]:
     串行调用:每本书搜完后等 API_INTERVAL,失败重试内置。
     """
     cards = []
-    _loop_start = time.time()
-    for i, parent in enumerate(parents):
-        _round_start = time.time()
+    for parent in parents:
         try:
             book = _search_book(parent)
-        except Exception as e:
-            _round_t = time.time() - _round_start
-            print(f"[readflow][probe] FAIL #{i+1}/{len(parents)} {_round_t:.1f}s | title={parent.get('title','')[:20]} | {type(e).__name__}: {e}", flush=True)
+        except Exception:
             continue  # 跳过失败的书
-        _round_t = time.time() - _round_start
-        print(f"[readflow][probe] OK   #{i+1}/{len(parents)} {_round_t:.1f}s | 累计{time.time()-_loop_start:.0f}s | 《{book.get('title','')}》", flush=True)
         cards.append({
             "card_type": "recommendation",
             "title": book.get("title", ""),
@@ -261,7 +249,6 @@ def _generate_recommendations(parents: list[dict]) -> list[dict]:
             "recommend_book": json.dumps(book, ensure_ascii=False),
         })
         time.sleep(API_INTERVAL)
-    print(f"[readflow][probe] step2 完成: {len(cards)}/{len(parents)} 成功, 总耗时 {time.time()-_loop_start:.0f}s", flush=True)
     return cards
 
 
