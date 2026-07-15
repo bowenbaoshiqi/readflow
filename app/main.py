@@ -75,8 +75,15 @@ def knowledge_page(request: Request):
 <title>知识卡片 — 书舟</title>
 <link rel="stylesheet" href="{base}/static/css/index.css">
 <style>
-.filters {{ display:flex; gap:8px; padding:12px; align-items:center; flex-wrap:wrap; }}
-.filters input, .filters select {{ padding:6px 10px; font-size:14px; border:1px solid #ccc; border-radius:4px; }}
+.tabs {{ display:flex; gap:0; padding:12px 12px 0; max-width:700px; margin:0 auto; border-bottom:1px solid #e0e0e0; }}
+.tab {{ padding:8px 18px; font-size:15px; color:#666; cursor:pointer; border-bottom:2px solid transparent; }}
+.tab.active {{ color:#1a73e8; border-bottom-color:#1a73e8; font-weight:bold; }}
+.date-bar {{ display:flex; gap:8px; padding:12px; flex-wrap:wrap; max-width:700px; margin:0 auto; }}
+.date-chip {{ padding:5px 12px; font-size:13px; color:#555; background:#f0f0f0;
+  border-radius:14px; cursor:pointer; }}
+.date-chip.active {{ background:#1a73e8; color:#fff; font-weight:bold; }}
+.filters {{ display:flex; gap:8px; padding:0 12px 8px; align-items:center; flex-wrap:wrap; max-width:700px; margin:0 auto; }}
+.filters input {{ padding:6px 10px; font-size:14px; border:1px solid #ccc; border-radius:4px; flex:1; }}
 .card-stream {{ max-width:700px; margin:0 auto; padding:0 12px 24px; }}
 .kc-card {{ background:#fff; border-radius:8px; padding:16px; margin-bottom:12px;
   box-shadow:0 1px 3px rgba(0,0,0,.1); }}
@@ -96,28 +103,67 @@ def knowledge_page(request: Request):
     <a href="/knowledge" style="font-weight:bold">知识卡片</a>
   </nav>
 </header>
+<div class="tabs">
+  <div class="tab active" data-type="knowledge" onclick="switchTab('knowledge')">知识点</div>
+  <div class="tab" data-type="blind_spot" onclick="switchTab('blind_spot')">盲点</div>
+  <div class="tab" data-type="recommendation" onclick="switchTab('recommendation')">推荐</div>
+</div>
+<div class="date-bar" id="date-bar">加载中…</div>
 <div class="filters">
-  <select id="type-filter" onchange="loadCards()">
-    <option value="">全部</option>
-    <option value="knowledge">知识点</option>
-    <option value="blind_spot">盲点</option>
-    <option value="recommendation">推荐</option>
-  </select>
   <input id="search-input" type="search" placeholder="搜索卡片…" oninput="loadCards()">
 </div>
 <div class="card-stream" id="card-stream">加载中…</div>
 <script>
+var curType = 'knowledge';
+var curDate = null;
+var dates = [];
+
+async function loadDates() {{
+  var params = new URLSearchParams();
+  params.set('card_type', curType);
+  try {{
+    var r = await fetch('{base}/api/knowledge/dates?' + params);
+    dates = await r.json();
+  }} catch(e) {{ dates = []; }}
+  // 默认最新日期
+  curDate = dates.length ? dates[0] : null;
+  renderDateBar();
+}}
+
+function renderDateBar() {{
+  var bar = document.getElementById('date-bar');
+  if (!dates.length) {{ bar.innerHTML = '<span style="color:#888">暂无卡片</span>'; return; }}
+  bar.innerHTML = dates.map(function(d) {{
+    var cls = 'date-chip' + (d === curDate ? ' active' : '');
+    return '<span class="' + cls + '" onclick="switchDate(\\'' + d + '\\')">' + d + '</span>';
+  }}).join('');
+}}
+
+function switchTab(type) {{
+  curType = type;
+  document.querySelectorAll('.tab').forEach(function(t) {{
+    t.classList.toggle('active', t.dataset.type === type);
+  }});
+  loadDates().then(loadCards);
+}}
+
+function switchDate(d) {{
+  curDate = d;
+  renderDateBar();
+  loadCards();
+}}
+
 async function loadCards() {{
-  var type = document.getElementById('type-filter').value;
   var q = document.getElementById('search-input').value;
   var params = new URLSearchParams();
-  if (type) params.set('card_type', type);
+  params.set('card_type', curType);
+  if (curDate) params.set('date', curDate);
   if (q) params.set('q', q);
   try {{
     var r = await fetch('{base}/api/knowledge/cards?' + params);
     var cards = await r.json();
   }} catch(e) {{ document.getElementById('card-stream').textContent = '加载失败'; return; }}
-  if (!cards.length) {{ document.getElementById('card-stream').innerHTML = '<p style="color:#888;text-align:center;padding:40px">暂无卡片</p>'; return; }}
+  if (!cards.length) {{ document.getElementById('card-stream').innerHTML = '<p style="color:#888;text-align:center;padding:40px">该日期暂无卡片</p>'; return; }}
   var labels = {{'knowledge':'知识点','blind_spot':'盲点','recommendation':'推荐'}};
   var html = '';
   for (var c of cards) {{
@@ -126,7 +172,6 @@ async function loadCards() {{
     if (c.recommend_book) {{
       try {{
         var rb = JSON.parse(c.recommend_book);
-        // 显著标注:推荐书名 + 推荐类型(盲点推荐/知识点推荐)+ 关联标题
         var bookName = rb.title || '';
         var ptype = c.parent_card_type;
         var recKind = ptype === 'blind_spot' ? '盲点推荐'
@@ -148,7 +193,7 @@ async function loadCards() {{
   }}
   document.getElementById('card-stream').innerHTML = html;
 }}
-loadCards();
+loadDates().then(loadCards);
 </script>
 </body></html>"""
 
