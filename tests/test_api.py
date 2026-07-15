@@ -526,6 +526,7 @@ class TestReaderBackButton:
     def test_back_button_goes_to_home_not_history_back(self, client, tmp_library):
         """reader.js 的 #back 处理应是 location.href='/',不含 history.back()。"""
         bid = ingest.ingest_file(_first_sample())
+        # /read/{id} 页面注入 reader.js,返回逻辑在 reader.js 里
         r = client.get(f"/read/{bid}")
         assert r.status_code == 200
         assert "reader.js" in r.text, "阅读页应加载 reader.js"
