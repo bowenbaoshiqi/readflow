@@ -2,9 +2,12 @@
 # 用法: docker compose up -d
 # 访问: http://<nas-ip>:8765
 #
-# 三个 volume 持久化(容器重建不丢):
-#   ./books-library  书库原文件 + watcher 监听源
-#   ./data           SQLite(readflow.db) + 封面图
+# 持久化:
+#   readflow-data   命名卷(ext4):SQLite(readflow.db) + 封面图
+#                   不能用 ./data 绑定挂载——Docker Desktop (macOS VirtioFS)
+#                   对 SQLite WAL 的 -shm 文件支持有缺陷,运行中 fd 失效后
+#                   报 disk I/O error / malformed,导致阅读页正文空白、库损坏。
+#   ./books-library 书库原文件 + watcher 监听源(只读、无 WAL,绑定挂载安全)
 # 重启策略 unless-stopped:开机自启 + 崩溃重启。
 
 services:
@@ -20,11 +23,14 @@ services:
     ports:
       - "8765:8765"
     volumes:
+      - readflow-data:/data
       - ./books-library:/books-library
-      - ./data:/data
     # 元数据 API key 从 .env 注入(enrich 需要;无 key 也能跑,只是不补全书目信息)
     env_file:
       - .env
     environment:
       - READFLOW_HOST=0.0.0.0
       - READFLOW_PORT=8765
+
+volumes:
+  readflow-data:
