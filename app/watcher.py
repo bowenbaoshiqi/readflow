@@ -46,6 +46,35 @@ class LibraryHandler(FileSystemEventHandler):
         if not event.is_directory:
             self._schedule(event.dest_path)
 
+    def on_deleted(self, event):
+        """文件被删 → 同步清库(删 DB + 删封面)。
+
+        删书唯一入口:文件系统删文件即触发清库。on_deleted 拿到的是 path,
+        需按 original_path 反查 book_id 再调 ingest.remove_book。
+        非支持格式/目录事件/不在 DB 的 path 一律跳过,不抛。
+        """
+        if event.is_directory:
+            return
+        path = Path(event.src_path)
+        if path.suffix.lower() not in SUPPORTED_EXT:
+            return
+        self._delete_by_path(path)
+
+    def _delete_by_path(self, path: Path) -> int | None:
+        """按 original_path 反查 book_id 并清库。返回删掉的 book_id,无则 None。
+
+        反查而非全量扫描:删除事件已精确携带被删路径,直接定位行,避免扫全表。
+        """
+        from . import ingest
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM books WHERE original_path=?", (str(path),)
+            ).fetchone()
+        if not row:
+            return None
+        ingest.remove_book(row["id"])
+        return row["id"]
+
     def flush_stable(self) -> list[int]:
         """处理已稳定(stable_seconds 内无新写入)的待入库文件。返回入库的 book_id 列表。"""
         now = time.time()
@@ -110,12 +139,36 @@ class LibraryWatcher:
                 print(f"[watcher] scan error: {e}")
 
     def _scan_once(self) -> None:
-        """全量扫描书库,把磁盘上有但 DB 没有的文件入库。幂等。"""
+        """全量扫描:正向入库(磁盘有DB无) + 反向清库(DB有磁盘无)。幂等。
+
+        反向同步兜底 inotify 漏触发:网络挂载/NFS 上 deleted 事件可能丢失,
+        导致文件已删但 DB 残留。定时全量比对补这道防线。
+        """
         if not self.library_dir.is_dir():
             return
+        # 正向:磁盘 → DB
         for p in self.library_dir.rglob("*"):
             if p.is_file() and p.suffix.lower() in SUPPORTED_EXT:
                 ingest.ingest_file(p)
+        # 反向:DB → 磁盘
+        self._purge_missing()
+
+    def _purge_missing(self) -> list[int]:
+        """DB 里有记录但原文件已不存在 → 清库。返回被清的 book_id 列表。
+
+        与 on_deleted 互补:on_deleted 是事件驱动的实时清库;
+        _purge_missing 是全量比对的兜底清库,扫所有 books 行检查文件是否还在。
+        """
+        from . import ingest
+        with db.get_conn() as conn:
+            rows = conn.execute("SELECT id, original_path FROM books").fetchall()
+        removed: list[int] = []
+        for r in rows:
+            p = Path(r["original_path"]) if r["original_path"] else None
+            if not p or not p.is_file():
+                if ingest.remove_book(r["id"]):
+                    removed.append(r["id"])
+        return removed
 
 
 _watcher: LibraryWatcher | None = None
