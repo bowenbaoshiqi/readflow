@@ -20,8 +20,8 @@ def list_cards(
     recommendation 卡片额外带 parent_title(JOIN 父卡片),供前端显著标注
     它推进的盲点/知识点标题。
     """
-    # 基础查询:kc.* + 父卡片标题(仅 recommendation 有 parent_card_id)
-    base_select = """SELECT kc.*, p.title AS parent_title
+    # 基础查询:kc.* + 父卡片标题+类型(仅 recommendation 有 parent_card_id)
+    base_select = """SELECT kc.*, p.title AS parent_title, p.card_type AS parent_card_type
                      FROM knowledge_cards kc
                      LEFT JOIN knowledge_cards p ON p.id = kc.parent_card_id"""
     order_limit = "ORDER BY kc.created_at DESC LIMIT ? OFFSET ?"

@@ -126,12 +126,16 @@ async function loadCards() {{
     if (c.recommend_book) {{
       try {{
         var rb = JSON.parse(c.recommend_book);
-        // 显著标注:推进书名 + 关联的盲点/知识点标题
+        // 显著标注:推荐书名 + 推荐类型(盲点推荐/知识点推荐)+ 关联标题
         var bookName = rb.title || '';
+        var ptype = c.parent_card_type;
+        var recKind = ptype === 'blind_spot' ? '盲点推荐'
+                    : ptype === 'knowledge' ? '知识点推荐' : '';
         var parentTag = c.parent_title
-          ? '<span class="kc-parent">← 推进盲点/知识点：' + c.parent_title + '</span>'
-          : '';
-        meta = '<div class="kc-recbook">📖 推进书：' + bookName
+          ? '<span class="kc-parent">' + (recKind ? recKind + ' · ' : '')
+            + c.parent_title + '</span>'
+          : (recKind ? '<span class="kc-parent">' + recKind + '</span>' : '');
+        meta = '<div class="kc-recbook">📖 推荐书：' + bookName
           + (rb.author ? ' / ' + rb.author : '') + '</div>' + parentTag;
       }} catch(e) {{}}
     }}
