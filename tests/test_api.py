@@ -569,36 +569,63 @@ class TestHomepageCards:
             "主页应包含知识/卡片相关内容"
 
     def test_knowledge_page_shows_parent_title_on_recommendation(self, client):
-        """推荐卡片应显著标注它推进的盲点/知识点标题(关联父卡片)。
+        """推荐卡片应显著标注:推荐书名 + 关联的盲点/知识点标题 + 推荐类型。
 
-        设计 5.3:recommendation 卡片下方展示「← 关联知识点/盲点:{parent.title}」。
-        后端 API 应在 recommendation 卡片上带 parent_title 字段(JOIN 父卡片),
-        供前端显著标注关联的盲点/知识点 + 推进书名。
+        - 术语用"推荐书"(不是"推进书")
+        - 区分"盲点推荐"vs"知识点推荐":带 parent_card_type 标识父卡片类型
+        - 带 parent_title 标注关联的盲点/知识点标题
         """
         from app import db
         with db.db() as conn:
+            # 盲点父卡 + 其推荐
             conn.execute(
                 """INSERT INTO knowledge_cards(card_type, title, body, created_at)
                    VALUES(?,?,?,datetime('now'))""",
                 ("blind_spot", "缺少认知心理学视角", "盲点内容"),
             )
-            parent_id = conn.execute(
+            blind_id = conn.execute(
                 "SELECT id FROM knowledge_cards WHERE title='缺少认知心理学视角'"
             ).fetchone()["id"]
             conn.execute(
                 """INSERT INTO knowledge_cards(card_type, title, body,
                    parent_card_id, recommend_book, created_at)
                    VALUES(?,?,?,?,?,datetime('now'))""",
-                ("recommendation", "思考快与慢", "推荐理由", parent_id,
+                ("recommendation", "思考快与慢", "推荐理由", blind_id,
                  '{"title":"思考，快与慢","author":"卡尼曼","reason":"r","summary":"s","isbn":"1"}'),
+            )
+            # 知识点父卡 + 其推荐
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body, created_at)
+                   VALUES(?,?,?,datetime('now'))""",
+                ("knowledge", "幸存者偏差", "知识点内容"),
+            )
+            know_id = conn.execute(
+                "SELECT id FROM knowledge_cards WHERE title='幸存者偏差'"
+            ).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO knowledge_cards(card_type, title, body,
+                   parent_card_id, recommend_book, created_at)
+                   VALUES(?,?,?,?,?,datetime('now'))""",
+                ("recommendation", "黑天鹅", "推荐理由", know_id,
+                 '{"title":"黑天鹅","author":"塔勒布","reason":"r","summary":"s","isbn":"2"}'),
             )
 
         r = client.get("/api/knowledge/cards?card_type=recommendation")
         assert r.status_code == 200
         cards = r.json()
-        rec = next(c for c in cards if c["card_type"] == "recommendation")
-        # 推进书的名字(从 recommend_book 解析)
-        assert rec["recommend_book"]  # 有推进书 JSON
-        # 关联的盲点/知识点标题(后端 JOIN 注入)
-        assert rec.get("parent_title") == "缺少认知心理学视角", \
-            "推荐卡片应带 parent_title 标注它推进的盲点/知识点"
+        rec_blind = next(c for c in cards if c["title"] == "思考快与慢")
+        rec_know = next(c for c in cards if c["title"] == "黑天鹅")
+
+        # 推荐书(不是"推进书")
+        assert rec_blind["recommend_book"]
+        assert rec_know["recommend_book"]
+
+        # 关联的盲点/知识点标题
+        assert rec_blind.get("parent_title") == "缺少认知心理学视角"
+        assert rec_know.get("parent_title") == "幸存者偏差"
+
+        # 区分盲点推荐 vs 知识点推荐
+        assert rec_blind.get("parent_card_type") == "blind_spot", \
+            "基于盲点的推荐应标识 parent_card_type=blind_spot"
+        assert rec_know.get("parent_card_type") == "knowledge", \
+            "基于知识点的推荐应标识 parent_card_type=knowledge"
