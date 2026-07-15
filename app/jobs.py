@@ -2,6 +2,7 @@
 
 定时策略:APScheduler 凌晨 2:00(CRON)。
 调用策略:串行,API 间 1s 间隔,失败重试 2 次(间隔 3s,与 metadata.py 一致)。
+模型:glm-5.2。
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from . import db
 
 ZHIPU_CHAT_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 ZHIPU_WEBSEARCH_URL = "https://open.bigmodel.cn/api/paas/v4/web_search"
-GLM_MODEL = "glm-4-flash"
+GLM_MODEL = "glm-5.2"
 MAX_RETRIES = 2
 RETRY_DELAY = 3.0
 API_INTERVAL = 1.0
@@ -25,36 +26,35 @@ def _api_key() -> str:
     return os.environ.get("ZHIPU_API_KEY", "")
 
 
-# ---------- 步骤 1:生成 knowledge + blind_spot ----------
+# ---------- step 1: 生成 knowledge + blind_spot ----------
 
-def _call_glm(prompt: str, timeout: float = 60.0) -> str:
-    """调 GLM chat API,失败重试 2 次(间隔 3s)。"""
+def _call_glm(prompt: str, timeout: float = 300.0) -> str:
+    """调 GLM chat API,失败不重试。
+
+    timeout=300s:GLM-5.2 偶发慢响应(实测单次 121s/171s 仍成功),60s read
+    timeout 会误杀偶发卡顿的请求。ReadTimeout 重试对"服务端偶发卡顿"无效
+    (实测 3 次重试均失败,每次跑满 60s = 186s/次纯浪费),故不重试。
+    """
     key = _api_key()
-    for attempt in range(MAX_RETRIES + 1):
-        try:
-            r = httpx.post(
-                ZHIPU_CHAT_URL,
-                headers={"Authorization": f"Bearer {key}",
-                         "Content-Type": "application/json"},
-                json={"model": GLM_MODEL,
-                      "messages": [{"role": "user", "content": prompt}]},
-                timeout=timeout,
-            )
-        except httpx.HTTPError:
-            if attempt == MAX_RETRIES:
-                raise
-            time.sleep(RETRY_DELAY)
-            continue
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        if attempt == MAX_RETRIES:
-            raise Exception(f"GLM API {r.status_code}: {r.text[:200]}")
-        time.sleep(RETRY_DELAY)
-    raise Exception("unreachable")
+    r = httpx.post(
+        ZHIPU_CHAT_URL,
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"},
+        json={"model": GLM_MODEL,
+              "messages": [{"role": "user", "content": prompt}]},
+        timeout=timeout,
+    )
+    if r.status_code == 200:
+        return r.json()["choices"][0]["message"]["content"]
+    raise Exception(f"GLM API {r.status_code}: {r.text[:200]}")
 
 
 def _generate_knowledge_and_blindspots() -> list[dict]:
-    """步骤 1:GLM 读 24h reading_log + highlights → 5 knowledge + 5 blind_spot。"""
+    """步骤 1:GLM 读 24h reading_log + highlights → 5 knowledge + 5 blind_spot。
+
+    GLM 只返回 title + body。book_id/source_type/source_ids 由代码层
+    从 reading_log 注入到 knowledge 卡片上。
+    """
     with db.get_conn() as conn:
         logs = conn.execute(
             """SELECT rl.book_id, rl.text, b.title AS book_title
@@ -80,11 +80,14 @@ def _generate_knowledge_and_blindspots() -> list[dict]:
     if not logs and not highlights:
         return []
 
+    # 记录 book_id 用于代码层注入
+    log_book_ids = [r["book_id"] for r in logs]
+
     log_text = "\n\n".join(
-        f"[{r['book_title']}] {r['text'][:3000]}" for r in logs
+        f"《{r['book_title']}》: {r['text'][:3000]}" for r in logs
     )
     hl_text = "\n".join(
-        f"[{r['book_title']}] {r['text']}" for r in highlights
+        f"《{r['book_title']}》: {r['text']}" for r in highlights
     )
     tags_text = ", ".join(
         r["tags"] for r in existing_tags
@@ -101,19 +104,13 @@ def _generate_knowledge_and_blindspots() -> list[dict]:
         f"## 已有知识卡片:\n{existing_cards_text[:2000]}\n\n"
         "请生成 **正好 5 张 knowledge 卡片** 和 **正好 5 张 blind_spot 卡片**。\n\n"
         "knowledge 卡片:从阅读内容中提炼的具体知识点(概念、观点、事实)。每张含:\n"
-        '- card_type: "knowledge"\n'
-        "- title: 知识点标题(10字以内)\n"
-        "- body: 100-200字解释\n"
-        "- book_id: 来源书ID(整数)\n"
-        '- source_type: "reading_log" 或 "highlight"\n'
-        "- source_ids: [整数]\n\n"
+        "- title: 知识点标题(15字以内)\n"
+        "- body: 100-200字解释\n\n"
         "blind_spot 卡片:基于书库标签和已有卡片分析的知识盲点。每张含:\n"
-        '- card_type: "blind_spot"\n'
-        "- title: 盲点标题(10字以内,如「缺少认知心理学视角」)\n"
+        "- title: 盲点标题(15字以内,如「缺少认知心理学视角」)\n"
         "- body: 100-200字解释你缺什么、为什么重要\n\n"
         "只返回 JSON 数组,不要其他内容。格式示例:\n"
-        '[{"card_type":"knowledge","title":"幸存者偏差","body":"...",'
-        '"book_id":1,"source_type":"reading_log","source_ids":[1]},'
+        '[{"card_type":"knowledge","title":"幸存者偏差","body":"..."},'
         '{"card_type":"blind_spot","title":"缺少XX","body":"..."}]'
     )
 
@@ -123,6 +120,13 @@ def _generate_knowledge_and_blindspots() -> list[dict]:
     except Exception as e:
         print(f"[readflow] step1 GLM failed: {e}")
         return []
+
+    # 代码层注入:为 knowledge 卡片补充 book_id/source_type/source_ids
+    for c in cards:
+        if c.get("card_type") == "knowledge":
+            c["book_id"] = log_book_ids[0] if log_book_ids else None
+            c["source_type"] = "reading_log"
+            c["source_ids"] = log_book_ids[:1]
 
     # 确保正好 5 knowledge + 5 blind_spot
     k = [c for c in cards if c.get("card_type") == "knowledge"][:5]
@@ -151,7 +155,7 @@ def _parse_glm_json(content: str) -> list:
     return []
 
 
-# ---------- 步骤 2:生成 recommendation ----------
+# ---------- step 2: 生成 recommendation ----------
 
 def _do_websearch(query: str) -> dict:
     """单次智谱 Web Search,失败重试 2 次。"""
@@ -186,16 +190,19 @@ def _do_websearch(query: str) -> dict:
 def _search_book(parent: dict) -> dict:
     """为一张 knowledge/blind_spot 卡片搜 1 本推荐书。
 
-    流程:Web Search 搜书名 → GLM 解析成 recommend_book JSON。
-    串行内建间隔(调用方控制)。
+    流程:Web Search 搜书名 → GLM 从搜索结果中选择最合适的一本 +
+    生成推荐理由(引用具体知识点/盲点)+ 200-400 字简介。
     """
     if parent["card_type"] == "knowledge":
-        query = f"{parent['title']} 相关书籍推荐"
+        query = f"{parent['title']} 相关书籍 豆瓣"
     else:
-        query = f"{parent['title']} 入门书籍推荐"
+        query = f"{parent['title']} 入门书 豆瓣"
 
+    _t0 = time.time()
     search_result = _do_websearch(query)
+    _t_ws = time.time() - _t0
     search_items = search_result.get("search_result") or []
+    print(f"[readflow][probe] websearch {len(search_items)}条 {_t_ws:.1f}s | q={query[:40]}", flush=True)
     digest = " ".join(
         (item.get("content") or "")[:500] for item in search_items[:3]
     )
@@ -203,18 +210,24 @@ def _search_book(parent: dict) -> dict:
         raise Exception("no search results")
 
     prompt = (
-        f"根据搜索摘要,为一本书生成推荐信息。\n"
+        f"从以下搜索结果中,选出最合适的一本书推荐给用户。\n\n"
         f"推荐背景:用户读到了「{parent['title']}」"
         f"{'（知识盲点）' if parent['card_type'] == 'blind_spot' else '（知识点）'}。\n"
-        f"搜索摘要:\n{digest[:1500]}\n\n"
-        "请推荐一本书(title/author/ISBN/推荐理由/简介),"
-        "理由必须引用具体知识点或盲点内容。\n"
         f"父卡片内容:{parent['body'][:200]}\n\n"
-        '只返回JSON:{"title":"书名","author":"作者","reason":"真实推荐理由(引用具体知识点)",'
-        '"summary":"200-400字简介","isbn":"978..."}\n'
+        f"搜索结果:\n{digest[:2000]}\n\n"
+        "请选出最合适的一本,给出:\n"
+        "- title: 书名\n"
+        "- author: 作者\n"
+        "- reason: 真实推荐理由,必须引用具体的知识点或盲点内容(100字左右)\n"
+        "- summary: 200-400字简介\n"
+        "- isbn: ISBN\n\n"
+        '只返回JSON:{"title":"","author":"","reason":"","summary":"","isbn":""}\n'
     )
 
+    _t1 = time.time()
     content = _call_glm(prompt[:3000])
+    _t_glm = time.time() - _t1
+    print(f"[readflow][probe] glm {_t_glm:.1f}s | 返回{len(content)}字 | title={parent['title'][:20]}", flush=True)
     data = _parse_glm_json(content)
     if isinstance(data, dict):
         return data
@@ -229,11 +242,17 @@ def _generate_recommendations(parents: list[dict]) -> list[dict]:
     串行调用:每本书搜完后等 API_INTERVAL,失败重试内置。
     """
     cards = []
-    for parent in parents:
+    _loop_start = time.time()
+    for i, parent in enumerate(parents):
+        _round_start = time.time()
         try:
             book = _search_book(parent)
-        except Exception:
+        except Exception as e:
+            _round_t = time.time() - _round_start
+            print(f"[readflow][probe] FAIL #{i+1}/{len(parents)} {_round_t:.1f}s | title={parent.get('title','')[:20]} | {type(e).__name__}: {e}", flush=True)
             continue  # 跳过失败的书
+        _round_t = time.time() - _round_start
+        print(f"[readflow][probe] OK   #{i+1}/{len(parents)} {_round_t:.1f}s | 累计{time.time()-_loop_start:.0f}s | 《{book.get('title','')}》", flush=True)
         cards.append({
             "card_type": "recommendation",
             "title": book.get("title", ""),
@@ -242,10 +261,11 @@ def _generate_recommendations(parents: list[dict]) -> list[dict]:
             "recommend_book": json.dumps(book, ensure_ascii=False),
         })
         time.sleep(API_INTERVAL)
+    print(f"[readflow][probe] step2 完成: {len(cards)}/{len(parents)} 成功, 总耗时 {time.time()-_loop_start:.0f}s", flush=True)
     return cards
 
 
-# ---------- 主入口:定时任务 ----------
+# ---------- 主入口 ----------
 
 def run_daily_job() -> list[int]:
     """每日凌晨批处理主函数。
@@ -265,22 +285,34 @@ def run_daily_job() -> list[int]:
     with db.db() as conn:
         ids = []
         for c in raw_cards:
+            # 校验 book_id:必须存在,否则用 NULL
+            book_id = None
+            if c.get("book_id") is not None:
+                try:
+                    bid = int(c["book_id"])
+                    exists = conn.execute(
+                        "SELECT 1 FROM books WHERE id=?", (bid,)
+                    ).fetchone()
+                    if exists:
+                        book_id = bid
+                except (ValueError, TypeError):
+                    pass
+
             cur = conn.execute(
                 """INSERT INTO knowledge_cards(card_type, title, body, book_id,
                    source_type, source_ids, created_at)
                    VALUES(?,?,?,?,?,?,datetime('now'))""",
                 (c.get("card_type"), c.get("title"), c.get("body"),
-                 c.get("book_id"), c.get("source_type"),
+                 book_id, c.get("source_type"),
                  json.dumps(c.get("source_ids")) if c.get("source_ids") else None),
             )
             ids.append(cur.lastrowid)
-        parent_ids = ids
 
     # 组装父卡片(已入库,有真实 ID)
     parents = []
     for i, c in enumerate(raw_cards):
         c_with_id = dict(c)
-        c_with_id["id"] = parent_ids[i] if i < len(parent_ids) else None
+        c_with_id["id"] = ids[i] if i < len(ids) else None
         parents.append(c_with_id)
 
     # 步骤 2:串行生成推荐
@@ -288,7 +320,7 @@ def run_daily_job() -> list[int]:
         recs = _generate_recommendations(parents)
     except Exception as e:
         print(f"[readflow] job step2 failed: {e}")
-        return parent_ids
+        return ids
 
     if recs:
         with db.db() as conn:
