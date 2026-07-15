@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -62,64 +61,6 @@ def get_cover(book_id: int):
     if not cover_file.is_file():
         raise HTTPException(404, "cover file missing")
     return FileResponse(str(cover_file))
-
-
-@router.delete("/{book_id}")
-def delete_book(book_id: int):
-    """删书(方案 C):删 DB 记录 + 原文件移到 .trash/ + 删封面。
-
-    - 原文件移到 {书库根}/.trash/{file_hash}_{原名}:file_hash 前缀防同名撞覆盖,
-      原名保留可读性。watcher 全局排除 .trash/ 防重新扫描入库。
-    - 封面 {file_hash}.jpg 一并删:封面从 epub 提取,书都没了封面成孤儿;
-      file_hash 命名保证不误删别的书的封面。
-    - DB 记录删除,reading_progress/highlights 靠 ON DELETE CASCADE 自动清。
-    - 原文件不存在(已移走/磁盘丢失)时:仍删 DB 记录,不因文件缺失阻断删除。
-    """
-    with db.get_conn() as conn:
-        row = conn.execute(
-            "SELECT original_path, file_hash, cover_path FROM books WHERE id=?",
-            (book_id,),
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "book not found")
-
-    original = Path(row["original_path"]) if row["original_path"] else None
-    fhash = row["file_hash"]
-
-    # 1. 原文件移到 .trash/
-    if original and original.is_file():
-        trash_dir = _library_trash_dir()
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        dest = trash_dir / f"{fhash}_{original.name}"
-        # 极端情况:同 hash 同名已存在(理论上 file_hash 唯一不会撞),跳过覆盖
-        if not dest.exists():
-            shutil.move(str(original), str(dest))
-
-    # 2. 删封面文件(用 ingest.COVER_DIR 定位,与入库时一致;
-    #    不用 DATA_ROOT —— 测试时 COVER_DIR 被 monkeypatch 到 tmp)
-    if row["cover_path"]:
-        cover_file = ingest.COVER_DIR / f"{fhash}.jpg"
-        if cover_file.is_file():
-            try:
-                cover_file.unlink()
-            except OSError:
-                pass  # 封面删失败不阻断删书
-
-    # 3. 删 DB 记录(CASCADE 清 progress/highlights)
-    with db.db() as conn:
-        conn.execute("DELETE FROM books WHERE id=?", (book_id,))
-
-    return {"ok": True}
-
-
-def _library_trash_dir() -> Path:
-    """书库根下的 .trash/ 目录。
-
-    延迟 import main 避免循环 import(main 依赖 routes.library)。
-    测试时 main.LIBRARY_DIR 被 monkeypatch 成 tmp 目录。
-    """
-    from .. import main
-    return Path(main.LIBRARY_DIR) / ".trash"
 
 
 @pages.get("/book/{book_id}", response_class=HTMLResponse)

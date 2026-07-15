@@ -319,3 +319,81 @@ class TestIngestFile:
             n = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
         assert n == 1, f"去重失败:应有 1 条记录,实际 {n}"
         assert not errors, f"并发 ingest 不应抛异常,实际: {errors}"
+
+
+class TestRemoveBook:
+    """测试 remove_book:文件系统删书的清库入口(删 DB + 删封面)。
+
+    删书唯一入口 = 文件系统删文件 → watcher on_deleted/_purge_missing → remove_book。
+    无 .trash 回收站,删即清。ON DELETE CASCADE 自动清进度/划线。
+    """
+
+    def test_remove_book_deletes_db_row(self):
+        """删后 books 表无该行。"""
+        from tests.conftest import _first_sample
+        bid = ingest.ingest_file(_first_sample())
+        assert ingest.remove_book(bid) is True
+        with db.get_conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM books WHERE id=?", (bid,)).fetchone()[0]
+        assert n == 0
+
+    def test_remove_book_cascades_progress_and_highlights(self):
+        """删书级联清 reading_progress + highlights(ON DELETE CASCADE)。"""
+        from tests.conftest import _first_sample
+        bid = ingest.ingest_file(_first_sample())
+        # 造进度 + 划线(直接插,绕过 API)
+        with db.db() as conn:
+            conn.execute(
+                "INSERT INTO reading_progress(book_id, spine_index, percent) VALUES(?, 2, 0.3)",
+                (bid,),
+            )
+            conn.execute(
+                "INSERT INTO highlights(book_id, spine_index, start_cfi, end_cfi, text) "
+                "VALUES(?, 0, 'a', 'b', 'x')",
+                (bid,),
+            )
+        ingest.remove_book(bid)
+        with db.get_conn() as conn:
+            p = conn.execute(
+                "SELECT COUNT(*) FROM reading_progress WHERE book_id=?", (bid,)
+            ).fetchone()[0]
+            h = conn.execute(
+                "SELECT COUNT(*) FROM highlights WHERE book_id=?", (bid,)
+            ).fetchone()[0]
+        assert p == 0 and h == 0
+
+    def test_remove_book_deletes_cover_file(self):
+        """删书后封面 {file_hash}.jpg 从 COVER_DIR 删除(不留孤儿)。"""
+        from tests.conftest import _sample_epub
+        bid = ingest.ingest_file(_sample_epub("钦探"))
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT file_hash, cover_path FROM books WHERE id=?", (bid,)
+            ).fetchone()
+        if not row["cover_path"]:
+            pytest.skip("该样本无封面,无法测删封面")
+        cover_file = ingest.COVER_DIR / f"{row['file_hash']}.jpg"
+        assert cover_file.is_file(), "删前封面文件应存在"
+        ingest.remove_book(bid)
+        assert not cover_file.is_file(), "删书后封面文件应被删除"
+
+    def test_remove_book_missing_id_returns_false(self):
+        """删不存在的 book_id 返回 False,不抛。"""
+        assert ingest.remove_book(99999) is False
+
+    def test_remove_book_missing_cover_no_error(self):
+        """封面文件已被手动删掉时,remove_book 不报错(DB 仍清)。"""
+        from tests.conftest import _sample_epub
+        bid = ingest.ingest_file(_sample_epub("钦探"))
+        with db.get_conn() as conn:
+            row = conn.execute(
+                "SELECT file_hash FROM books WHERE id=?", (bid,)
+            ).fetchone()
+        cover_file = ingest.COVER_DIR / f"{row['file_hash']}.jpg"
+        if cover_file.is_file():
+            cover_file.unlink()  # 先手动删封面
+        # 不应抛,且 DB 记录仍被清
+        assert ingest.remove_book(bid) is True
+        with db.get_conn() as conn:
+            n = conn.execute("SELECT COUNT(*) FROM books WHERE id=?", (bid,)).fetchone()[0]
+        assert n == 0

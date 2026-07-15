@@ -237,3 +237,33 @@ def _enrich_async(book_id: int) -> None:
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
+
+
+def remove_book(book_id: int) -> bool:
+    """删书:删 DB 记录 + 删封面文件。返回是否真删了。
+
+    文件系统删书的清库入口(watcher on_deleted / _purge_missing 调用)。
+    - 删 books 行,reading_progress/highlights 靠 ON DELETE CASCADE 自动清
+    - 删封面 {file_hash}.jpg(用 COVER_DIR 定位,与入库对称;file_hash 命名保证不误删别的书)
+    - 封面删失败不阻断删书(孤儿封面无害)
+    """
+    with db_tx() as conn:
+        row = conn.execute(
+            "SELECT file_hash FROM books WHERE id=?", (book_id,)
+        ).fetchone()
+        if not row:
+            return False
+        fhash = row["file_hash"]
+
+    # 删封面(先删文件再删 DB:DB 已确认存在,文件缺失不阻断)
+    cover_file = COVER_DIR / f"{fhash}.jpg"
+    if cover_file.is_file():
+        try:
+            cover_file.unlink()
+        except OSError:
+            pass  # 封面删失败不阻断删书
+
+    # 删 DB 记录(CASCADE 清 progress/highlights)
+    with db_tx() as conn:
+        conn.execute("DELETE FROM books WHERE id=?", (book_id,))
+    return True
