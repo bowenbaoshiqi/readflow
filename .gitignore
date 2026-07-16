@@ -4,6 +4,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+.coverage
+
+# 数据迁移/备份产物(含数据库,不入 git)
+*-backup.tar.gz
 
 # uv
 .uv-cache/
