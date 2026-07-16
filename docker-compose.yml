@@ -8,13 +8,18 @@
 #                   对 SQLite WAL 的 -shm 文件支持有缺陷,运行中 fd 失效后
 #                   报 disk I/O error / malformed,导致阅读页正文空白、库损坏。
 #   ./books-library 书库原文件 + watcher 监听源(只读、无 WAL,绑定挂载安全)
+#
+# ⚠️ 卷名陷阱:compose 实际创建的卷名带项目前缀 → readflow_readflow-data。
+#   手动 `docker run -v readflow-data:/data` 会建一个无前缀的空卷,接错库致数据"丢失"。
+#   统一用 `docker compose up` 启动;若必须手动 run,卷名写全:
+#   docker run -v readflow_readflow-data:/data ...
 # 重启策略 unless-stopped:开机自启 + 崩溃重启。
 
 services:
   readflow:
     # 默认构建当前主机架构(arm64 NAS / amd64 x86 各自本地构建即可)。
     # 跨架构(如 x86 构给 arm64 NAS)需 buildx + push 到 registry,见 Dockerfile 顶部说明。
-    image: readflow:0.3
+    image: readflow:v0.6
     build:
       context: .
       dockerfile: Dockerfile
