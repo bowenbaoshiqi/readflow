@@ -425,6 +425,80 @@ class TestReaderBackButton:
             "#back 应 location.href='/' 回书架首页"
 
 
+class TestReaderToolbarButtons:
+    """v0.6 Bug2: 划线/复制按钮从底部固定栏移到顶部 #toolbar。
+
+    问题: #bottom-bar 固定钉在视口底部居中(z-index:20),用户选中靠底部
+    的文字时(读书时最常见),工具条正好压在选区上,遮挡文字。
+    方案 C: 把按钮挪进顶部 #toolbar,不再有底部浮层遮挡正文。
+    """
+
+    def _html(self, client):
+        bid = ingest.ingest_file(_first_sample())
+        return client.get(f"/read/{bid}")
+
+    def test_bottom_bar_removed_from_html(self, client):
+        """#bottom-bar 容器应从阅读页 HTML 移除。"""
+        r = self._html(client)
+        assert 'id="bottom-bar"' not in r.text, \
+            "应移除 #bottom-bar(改用顶部 #toolbar 承载划线/复制按钮)"
+
+    def test_highlight_button_in_toolbar(self, client):
+        """划线按钮应在 #toolbar 内,带 data-act=highlight。"""
+        r = self._html(client)
+        html = r.text
+        # 定位 #toolbar 块
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'data-act="highlight"' in toolbar_block, \
+            "划线按钮应在 #toolbar 内"
+
+    def test_copy_button_in_toolbar(self, client):
+        """复制按钮应在 #toolbar 内,带 data-act=copy。"""
+        r = self._html(client)
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'data-act="copy"' in toolbar_block, \
+            "复制按钮应在 #toolbar 内"
+
+    def test_reader_js_targets_toolbar_not_bottom_bar(self):
+        """reader.js 点击监听应绑到 #toolbar(或其内按钮),不再绑 #bottom-bar。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # bottom-bar 的 addEventListener 应已移除
+        assert "getElementById('bottom-bar')" not in js, \
+            "reader.js 不应再引用 #bottom-bar;改绑 #toolbar"
+        # 应有 toolbar 相关监听
+        assert "toolbar" in js, "reader.js 应监听 #toolbar 的划线/复制点击"
+
+    def test_css_no_fixed_bottom_bar(self):
+        """reader.css 中 #bottom-bar 的 position:fixed 底部浮层样式应移除。"""
+        from pathlib import Path
+        css = (Path(__file__).resolve().parent.parent / "app" / "static" / "css" / "reader.css").read_text()
+        # #bottom-bar 选择器不应再有 position:fixed / bottom 定位
+        import re
+        m = re.search(r"#bottom-bar\s*\{[^}]*\}", css)
+        assert not m or "fixed" not in m.group(0), \
+            "#bottom-bar 不应再是 position:fixed 浮层"
+
+    def test_toolbar_buttons_hidden_by_default(self, client):
+        """划线/复制按钮默认隐藏(无选区时不显示),选中文字才出现。
+
+        挪进 #toolbar 后不能常驻(否则挤占工具栏),需 hidden 默认。
+        """
+        r = self._html(client)
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        # 两个按钮应带 hidden 或在默认隐藏的容器里
+        assert "hidden" in toolbar_block.lower(), \
+            "划线/复制按钮应默认 hidden,选中文字才显示"
+
+
 class TestReaderSessionPost:
     """reader.js 关书时应 POST reading-session。
 

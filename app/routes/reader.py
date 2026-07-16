@@ -71,6 +71,8 @@ def reader_page(book_id: int, request: Request):
   <span id="progress">0%</span>
   <button id="toc-btn" title="目录">☰</button>
   <button id="typo-btn" title="排版">文</button>
+  <button data-act="highlight" id="hl-btn" hidden title="划线">划线</button>
+  <button data-act="copy" id="cp-btn" hidden title="复制">复制</button>
 </div>
 <div id="viewer" data-book-id="{book_id}" data-base="{base}"></div>
 <aside id="typo-panel" hidden>
@@ -104,10 +106,6 @@ def reader_page(book_id: int, request: Request):
     </div>
   </div>
 </aside>
-<div id="bottom-bar" hidden>
-  <button data-act="highlight">划线</button>
-  <button data-act="copy">复制</button>
-</div>
 
 <!-- 全局错误捕获:把异常显示到页面,方便不用 devtools 也能看到 -->
 <script>

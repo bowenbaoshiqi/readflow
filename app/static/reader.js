@@ -73,7 +73,8 @@ view.addEventListener('relocate', e => {
   }).catch(() => {})
 })
 
-// ---- 选中文字 → 弹出底部工具栏 ----
+// ---- 选中文字 → 显示顶部工具栏的划线/复制按钮 ----
+// v0.6: 按钮从底部固定浮层移到顶部 #toolbar,避免遮挡正文选区。
 // foliate 用 iframe 渲染,选区在 iframe 的 doc 里,必须遍历 renderer.getContents() 取
 function getFoliateSelection() {
   const contents = view.renderer?.getContents() ?? []
@@ -89,25 +90,33 @@ function getFoliateSelection() {
   return null
 }
 
+// 当前选区状态(划线/复制按钮点击时读)
+let selState = null  // { cfi, text, index } | null
+
+function showSelButtons(show) {
+  document.getElementById('hl-btn').hidden = !show
+  document.getElementById('cp-btn').hidden = !show
+}
+
 // 用定时轮询检测选区变化(selectionchange 在 iframe 内不冒泡到主文档)
 let selectionPoll = null
 let lastSelectionActive = false
 function startSelectionPoll() {
   if (selectionPoll) return
   selectionPoll = setInterval(() => {
-    const bar = document.getElementById('bottom-bar')
     const sel = getFoliateSelection()
     if (sel && sel.cfi) {
-      bar.hidden = false
-      bar.dataset.cfi = sel.cfi
-      bar.dataset.text = sel.text
-      bar.dataset.index = sel.index
+      selState = { cfi: sel.cfi, text: sel.text, index: sel.index }
+      showSelButtons(true)
       lastSelectionActive = true
     } else if (lastSelectionActive) {
       // 选区消失,延迟隐藏(避免划线按钮点击前就被藏)
       setTimeout(() => {
         const still = getFoliateSelection()
-        if (!still || !still.cfi) bar.hidden = true
+        if (!still || !still.cfi) {
+          selState = null
+          showSelButtons(false)
+        }
       }, 150)
       lastSelectionActive = false
     }
@@ -115,41 +124,38 @@ function startSelectionPoll() {
 }
 startSelectionPoll()
 
-// ---- 划线按钮 ----
-document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
-  if (ev.target?.dataset?.act !== 'highlight') return
-  const bar = ev.currentTarget
-  const cfi = bar.dataset.cfi
-  const text = bar.dataset.text
-  const index = Number(bar.dataset.index ?? currentLocation?.index ?? 0)
-  if (!cfi) return
-  const res = await fetch(`${BASE}/api/books/${BOOK_ID}/highlights`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      spine_index: index,
-      start_cfi: cfi, end_cfi: cfi, text
-    })
-  }).then(r => r.json())
-  if (res.ok) {
-    try { await view.addAnnotation({ value: cfi, color: 'yellow', note: text }) } catch {}
-    bar.hidden = true
-    try { view.deselect() } catch {}
-  }
-})
+// ---- 划线/复制按钮(事件委托到 #toolbar) ----
+document.getElementById('toolbar').addEventListener('click', async (ev) => {
+  const act = ev.target?.dataset?.act
+  if (!act) return  // 点的是 toolbar 其他按钮(back/toc/typo),不处理
 
-// ---- 复制按钮 ----
-document.getElementById('bottom-bar').addEventListener('click', async (ev) => {
-  if (ev.target?.dataset?.act !== 'copy') return
-  const bar = ev.currentTarget
-  const text = bar.dataset.text
-  if (!text) return
-  try {
-    await navigator.clipboard.writeText(text)
-    bar.dataset.text = '已复制 ✓'
-    setTimeout(() => { bar.hidden = true }, 600)
-  } catch {
-    // 剪贴板 API 在非 HTTPS/localhost 可能失败,降级提示
-    alert('复制失败,请手动选择复制:\n' + text.slice(0, 200))
+  if (act === 'highlight') {
+    if (!selState?.cfi) return
+    const { cfi, text } = selState
+    const index = Number(selState.index ?? currentLocation?.index ?? 0)
+    const res = await fetch(`${BASE}/api/books/${BOOK_ID}/highlights`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spine_index: index,
+        start_cfi: cfi, end_cfi: cfi, text
+      })
+    }).then(r => r.json())
+    if (res.ok) {
+      try { await view.addAnnotation({ value: cfi, color: 'yellow', note: text }) } catch {}
+      showSelButtons(false)
+      try { view.deselect() } catch {}
+    }
+  } else if (act === 'copy') {
+    const text = selState?.text
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+      ev.target.textContent = '已复制 ✓'
+      setTimeout(() => { showSelButtons(false); ev.target.textContent = '复制' }, 600)
+    } catch {
+      // 剪贴板 API 在非 HTTPS/localhost 可能失败,降级提示
+      alert('复制失败,请手动选择复制:\n' + text.slice(0, 200))
+    }
   }
 })
 
