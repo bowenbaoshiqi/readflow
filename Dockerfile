@@ -33,6 +33,17 @@ COPY app/ ./app/
 RUN test -f /app/app/static/foliate-js/view.js \
     || { echo "ERROR: foliate-js submodule 缺失,请先 git submodule update --init"; exit 1; }
 
+# 应用 vendored 补丁:foliate-js paginator.js 上游边界崩溃修复
+# (snap/scrollBy 解构未初始化的 #scrollBounds/#touchState → TypeError,详见 patches/foliate-paginator.patch)
+# 用 patch -p1 在 foliate-js 目录内应用;补丁失败则 build 即报错,避免运行时静默回归。
+# slim 镜像无 patch 命令,装一下(--no-install-recommends 不带多余依赖)。
+COPY patches/foliate-paginator.patch /tmp/foliate-paginator.patch
+RUN apt-get update && apt-get install -y --no-install-recommends patch \
+    && cd /app/app/static/foliate-js \
+    && patch -p1 < /tmp/foliate-paginator.patch \
+    && rm /tmp/foliate-paginator.patch \
+    && rm -rf /var/lib/apt/lists/*
+
 # 容器内固定挂载点(宿主路径由 compose 配)
 ENV READFLOW_DATA_DIR=/data \
     READFLOW_LIBRARY_DIR=/books-library \

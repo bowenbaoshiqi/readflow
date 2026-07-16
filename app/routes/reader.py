@@ -46,7 +46,7 @@ def reader_page(book_id: int, request: Request):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{row['title']} - 书舟</title>
-<link rel="stylesheet" href="{base}/static/css/reader.css">
+<link rel="stylesheet" href="{base}/static/css/reader.css?v=v0.6.7">
 <script>
 // Kindle(实验性浏览器)不支持 ES module,foliate-js 依赖 module 无法加载。
 // Kindle 重定向到 /read-html/{book_id}(服务端渲染 HTML,Kindle 友好);
@@ -59,7 +59,7 @@ def reader_page(book_id: int, request: Request):
   }}
   var s = document.createElement('script');
   s.type = 'module';
-  s.src = '{base}/static/reader.js';
+  s.src = '{base}/static/reader.js?v=v0.6.7';
   document.head.appendChild(s);
 }})();
 </script>
@@ -70,7 +70,11 @@ def reader_page(book_id: int, request: Request):
   <span id="title">{row['title']}</span>
   <span id="progress">0%</span>
   <button id="toc-btn" title="目录">☰</button>
+  <button id="prev-ch" title="上一章">‹</button>
+  <button id="next-ch" title="下一章">›</button>
   <button id="typo-btn" title="排版">文</button>
+  <button data-act="highlight" id="hl-btn" hidden title="划线">划线</button>
+  <button data-act="copy" id="cp-btn" hidden title="复制">复制</button>
 </div>
 <div id="viewer" data-book-id="{book_id}" data-base="{base}"></div>
 <aside id="typo-panel" hidden>
@@ -104,10 +108,6 @@ def reader_page(book_id: int, request: Request):
     </div>
   </div>
 </aside>
-<div id="bottom-bar" hidden>
-  <button data-act="highlight">划线</button>
-  <button data-act="copy">复制</button>
-</div>
 
 <!-- 全局错误捕获:把异常显示到页面,方便不用 devtools 也能看到 -->
 <script>

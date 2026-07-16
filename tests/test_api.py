@@ -425,6 +425,164 @@ class TestReaderBackButton:
             "#back 应 location.href='/' 回书架首页"
 
 
+class TestReaderToolbarButtons:
+    """v0.6 Bug2: 划线/复制按钮从底部固定栏移到顶部 #toolbar。
+
+    问题: #bottom-bar 固定钉在视口底部居中(z-index:20),用户选中靠底部
+    的文字时(读书时最常见),工具条正好压在选区上,遮挡文字。
+    方案 C: 把按钮挪进顶部 #toolbar,不再有底部浮层遮挡正文。
+    """
+
+    def _html(self, client):
+        bid = ingest.ingest_file(_first_sample())
+        return client.get(f"/read/{bid}")
+
+    def test_bottom_bar_removed_from_html(self, client):
+        """#bottom-bar 容器应从阅读页 HTML 移除。"""
+        r = self._html(client)
+        assert 'id="bottom-bar"' not in r.text, \
+            "应移除 #bottom-bar(改用顶部 #toolbar 承载划线/复制按钮)"
+
+    def test_highlight_button_in_toolbar(self, client):
+        """划线按钮应在 #toolbar 内,带 data-act=highlight。"""
+        r = self._html(client)
+        html = r.text
+        # 定位 #toolbar 块
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'data-act="highlight"' in toolbar_block, \
+            "划线按钮应在 #toolbar 内"
+
+    def test_copy_button_in_toolbar(self, client):
+        """复制按钮应在 #toolbar 内,带 data-act=copy。"""
+        r = self._html(client)
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'data-act="copy"' in toolbar_block, \
+            "复制按钮应在 #toolbar 内"
+
+    def test_reader_js_targets_toolbar_not_bottom_bar(self):
+        """reader.js 点击监听应绑到 #toolbar(或其内按钮),不再绑 #bottom-bar。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # bottom-bar 的 addEventListener 应已移除
+        assert "getElementById('bottom-bar')" not in js, \
+            "reader.js 不应再引用 #bottom-bar;改绑 #toolbar"
+        # 应有 toolbar 相关监听
+        assert "toolbar" in js, "reader.js 应监听 #toolbar 的划线/复制点击"
+
+    def test_css_no_fixed_bottom_bar(self):
+        """reader.css 中 #bottom-bar 的 position:fixed 底部浮层样式应移除。"""
+        from pathlib import Path
+        css = (Path(__file__).resolve().parent.parent / "app" / "static" / "css" / "reader.css").read_text()
+        # #bottom-bar 选择器不应再有 position:fixed / bottom 定位
+        import re
+        m = re.search(r"#bottom-bar\s*\{[^}]*\}", css)
+        assert not m or "fixed" not in m.group(0), \
+            "#bottom-bar 不应再是 position:fixed 浮层"
+
+    def test_toolbar_buttons_hidden_by_default(self, client):
+        """划线/复制按钮默认隐藏(无选区时不显示),选中文字才出现。
+
+        挪进 #toolbar 后不能常驻(否则挤占工具栏),需 hidden 默认。
+        """
+        r = self._html(client)
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        # 两个按钮应带 hidden 或在默认隐藏的容器里
+        assert "hidden" in toolbar_block.lower(), \
+            "划线/复制按钮应默认 hidden,选中文字才显示"
+
+
+class TestReaderScrolledFlow:
+    """v0.6 Bug1: 翻页改用滚动模式(flow=scrolled),绕开分栏边界崩溃。
+
+    背景: foliate-js 分栏翻页器(CSS multi-column)在边界场景崩溃
+    - paginator.js 862: #onTouchEnd 读 undefined #touchState
+    - paginator.js 806/797: snap/scrollBy 解构 undefined #scrollBounds
+    - paginator.js 1016: #goTo 读 undefined sections[index].load
+    上游承认 slow+buggy,无现成替换(README:171, issue #108/#86)。
+    滚动模式下 paginator 的 #onTouchEnd 直接 return(603行),snap 不触发,
+    上述分栏边界代码全部绕开,最稳。
+    """
+
+    def test_reader_js_sets_scrolled_flow(self):
+        """reader.js 应在 open 后设 flow=scrolled。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        assert "flow" in js and "scrolled" in js, \
+            "reader.js 应设 setAttribute('flow', 'scrolled')"
+
+    def test_reader_js_no_click_paging(self):
+        """滚动模式下不应有点击左右半屏翻页(键盘 goLeft/goRight 作备用可保留)。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # 点击翻页那段(view.addEventListener('click' + goLeft/goRight)应移除
+        assert "点左半屏" not in js and "点击左右半屏翻页" not in js, \
+            "滚动模式移除点击半屏翻页;用户直接上下滑"
+
+    def test_css_viewer_scrollable(self):
+        """#viewer 在滚动模式应允许内容滚动(非 overflow:hidden 钉死)。"""
+        from pathlib import Path
+        css = (Path(__file__).resolve().parent.parent / "app" / "static" / "css" / "reader.css").read_text()
+        import re
+        m = re.search(r"#viewer\s*\{[^}]*\}", css)
+        assert m, "reader.css 应有 #viewer 规则"
+        # 滚动模式 viewer 不能 overflow:hidden 把滚动条吃掉
+        viewer_rule = m.group(0)
+        assert "overflow: hidden" not in viewer_rule and "overflow:hidden" not in viewer_rule, \
+            "#viewer 不应 overflow:hidden(滚动模式需可见滚动)"
+
+    def test_reader_js_version_bumped(self, client):
+        """reader.js/css 引用应带新版本号(让手机拉新文件,绕开缓存)。"""
+        import re
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read/{bid}")
+        # 版本号应 >= v0.6.3(滚动模式 + 章节导航改动需 bump)。不写死具体小版本,
+        # 否则每 bump 一次就得改测试——用正则提取并比较次版本号。
+        vers = re.findall(r"\?v=v(\d+)\.(\d+)\.(\d+)", r.text)
+        assert vers, "reader.js/css 引用应带 ?v=vX.Y.Z 版本号防缓存"
+        # 任一引用 >= v0.6.3 即可
+        assert any((int(ma), int(mi), int(pa)) >= (0, 6, 3) for ma, mi, pa in vers), \
+            f"版本号应 >= v0.6.3,实际 {vers}"
+
+    def test_toolbar_has_prev_next_chapter(self, client):
+        """滚动模式无整页翻页,toolbar 需有上一章/下一章按钮。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read/{bid}")
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'id="prev-ch"' in toolbar_block, "#toolbar 应有上一章按钮"
+        assert 'id="next-ch"' in toolbar_block, "#toolbar 应有下一章按钮"
+
+    def test_reader_js_has_chapter_nav(self):
+        """reader.js 应有上下章跳转逻辑:取当前 section index + 找相邻 linear section + goTo。
+
+        scrolled 模式原生滚动只在单章内滚,不自动跨章,靠按钮。
+        当前 section index 取 renderer.getContents()[0].index(内部 #index,直接反映
+        正在渲染的 section,比 relocate 事件存的 currentLocation 更即时——relocate 在
+        scrolled 下由 scroll 事件 250ms debounce 触发,有延迟且首屏前为 null)。
+        """
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # 按钮点击处理
+        assert "prev-ch" in js and "next-ch" in js, \
+            "reader.js 应处理 prev-ch / next-ch 按钮点击"
+        # 当前 section index 取自 getContents(非 currentLocation,理由见 docstring)
+        assert "getContents" in js, "应通过 renderer.getContents() 取当前 section index"
+        assert "goTo" in js, "应用 view.goTo 跳转"
+        # 跳相邻 readable section(linear !== 'no'),与 paginator #adjacentIndex 同逻辑
+        assert "linear" in js and "'no'" in js, "应跳过 linear==='no' 的 section"
+
+
+
 class TestReaderSessionPost:
     """reader.js 关书时应 POST reading-session。
 
