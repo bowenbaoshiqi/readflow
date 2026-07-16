@@ -18,6 +18,8 @@ body { font-family: -apple-system, "PingFang SC", sans-serif; background: var(--
 #toolbar #title { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #toolbar #progress { font-size: 13px; color: #666; min-width: 40px; text-align: right; }
 #toolbar button { background: none; border: none; font-size: 18px; cursor: pointer; color: var(--fg); }
+/* v0.6: 上一章/下一章按钮(滚动模式跨章节必备) */
+#toolbar #prev-ch, #toolbar #next-ch { font-size: 20px; padding: 0 4px; color: #666; }
 /* v0.6: 划线/复制按钮移进 toolbar,默认 hidden,选中文字才显示(不再有底部浮层遮挡正文) */
 #toolbar button[data-act] { font-size: 14px; padding: 4px 10px; border-radius: 4px; }
 #toolbar button[data-act][hidden] { display: none; }

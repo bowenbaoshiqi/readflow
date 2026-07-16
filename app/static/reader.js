@@ -26,6 +26,11 @@ async function init() {
   await view.open(`${BASE}/api/books/${BOOK_ID}/file`)
   console.log('[readflow] book opened, sections:', view.book?.sections?.length)
 
+  // v0.6: 切滚动模式(flow=scrolled),绕开分栏翻页器边界崩溃
+  // (snap/scrollBounds/跨章节 #goTo 的 undefined,详见 docs/testing/v0.6)
+  // 滚动模式下 paginator #onTouchEnd 直接 return,不再触发 snap 链。
+  if (view.renderer) view.renderer.setAttribute('flow', 'scrolled')
+
   // 排版设置:加载用户偏好 + 应用到 foliate 渲染器
   await initTypography()
 
@@ -169,18 +174,30 @@ document.getElementById('toc-btn').onclick = async () => {
   if (idx != null && toc[+idx]) await view.goTo(toc[+idx].href)
 }
 
-// ---- 翻页:键盘箭头 + 点击左右半屏 ----
-// 点击中间区域不翻页(避免干扰选中文字);点左半屏上一页,右半屏下一页
-view.addEventListener('click', e => {
-  // 选中文字时不翻页
-  const sel = window.getSelection()
-  if (sel && !sel.isCollapsed) return
-  const rect = view.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  if (x < rect.width * 0.4) view.goLeft()
-  else if (x > rect.width * 0.6) view.goRight()
-})
+// ---- 上一章/下一章(滚动模式必备:无整页翻页,靠按钮跨章节) ----
+// scrolled 模式原生滚动只在单章内滚,不自动跨章(不像分栏翻页能翻到下一章),
+// 所以必须给按钮。当前章节序号取 renderer.getContents()[0].index(= 内部 #index,
+// 直接反映正在渲染的 section,比 relocate 事件存的 currentLocation 更即时——
+// relocate 在 scrolled 下由 scroll 事件 250ms debounce 触发,有延迟且首屏前为 null)。
+// view.goTo 传纯数字(resolveNavigation 里 typeof==='number' → {index}),
+// 传 {index} 对象反而不认(会落到 resolveHref 失败)。
+function navChapter(dir) {
+  const cur = view.renderer?.getContents?.()?.[0]?.index
+  if (cur == null) return  // 书未渲染完(#view 为 null)或 renderer 未就绪,忽略
+  const sections = view.book?.sections ?? []
+  for (let i = cur + dir; i >= 0 && i < sections.length; i += dir) {
+    if (sections[i]?.linear !== 'no') {
+      view.goTo(i).catch(e => console.warn('[navChapter] goTo failed', e))
+      return
+    }
+  }
+}
+document.getElementById('prev-ch').onclick = () => navChapter(-1)
+document.getElementById('next-ch').onclick = () => navChapter(1)
 
+// ---- 翻页:键盘箭头(滚动模式下用户主要靠触摸上下滑,键盘作备用) ----
+// v0.6: 移除分栏模式的点击翻页逻辑,改滚动模式后用户直接上下滑。
+// 滚动模式用户直接上下滑,左右点击翻页无意义且会干扰选区。
 document.addEventListener('keydown', e => {
   // 输入框聚焦时不拦截
   if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA') return

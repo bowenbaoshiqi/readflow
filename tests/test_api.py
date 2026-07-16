@@ -499,6 +499,90 @@ class TestReaderToolbarButtons:
             "划线/复制按钮应默认 hidden,选中文字才显示"
 
 
+class TestReaderScrolledFlow:
+    """v0.6 Bug1: 翻页改用滚动模式(flow=scrolled),绕开分栏边界崩溃。
+
+    背景: foliate-js 分栏翻页器(CSS multi-column)在边界场景崩溃
+    - paginator.js 862: #onTouchEnd 读 undefined #touchState
+    - paginator.js 806/797: snap/scrollBy 解构 undefined #scrollBounds
+    - paginator.js 1016: #goTo 读 undefined sections[index].load
+    上游承认 slow+buggy,无现成替换(README:171, issue #108/#86)。
+    滚动模式下 paginator 的 #onTouchEnd 直接 return(603行),snap 不触发,
+    上述分栏边界代码全部绕开,最稳。
+    """
+
+    def test_reader_js_sets_scrolled_flow(self):
+        """reader.js 应在 open 后设 flow=scrolled。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        assert "flow" in js and "scrolled" in js, \
+            "reader.js 应设 setAttribute('flow', 'scrolled')"
+
+    def test_reader_js_no_click_paging(self):
+        """滚动模式下不应有点击左右半屏翻页(键盘 goLeft/goRight 作备用可保留)。"""
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # 点击翻页那段(view.addEventListener('click' + goLeft/goRight)应移除
+        assert "点左半屏" not in js and "点击左右半屏翻页" not in js, \
+            "滚动模式移除点击半屏翻页;用户直接上下滑"
+
+    def test_css_viewer_scrollable(self):
+        """#viewer 在滚动模式应允许内容滚动(非 overflow:hidden 钉死)。"""
+        from pathlib import Path
+        css = (Path(__file__).resolve().parent.parent / "app" / "static" / "css" / "reader.css").read_text()
+        import re
+        m = re.search(r"#viewer\s*\{[^}]*\}", css)
+        assert m, "reader.css 应有 #viewer 规则"
+        # 滚动模式 viewer 不能 overflow:hidden 把滚动条吃掉
+        viewer_rule = m.group(0)
+        assert "overflow: hidden" not in viewer_rule and "overflow:hidden" not in viewer_rule, \
+            "#viewer 不应 overflow:hidden(滚动模式需可见滚动)"
+
+    def test_reader_js_version_bumped(self, client):
+        """reader.js/css 引用应带新版本号(让手机拉新文件,绕开缓存)。"""
+        import re
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read/{bid}")
+        # 版本号应 >= v0.6.3(滚动模式 + 章节导航改动需 bump)。不写死具体小版本,
+        # 否则每 bump 一次就得改测试——用正则提取并比较次版本号。
+        vers = re.findall(r"\?v=v(\d+)\.(\d+)\.(\d+)", r.text)
+        assert vers, "reader.js/css 引用应带 ?v=vX.Y.Z 版本号防缓存"
+        # 任一引用 >= v0.6.3 即可
+        assert any((int(ma), int(mi), int(pa)) >= (0, 6, 3) for ma, mi, pa in vers), \
+            f"版本号应 >= v0.6.3,实际 {vers}"
+
+    def test_toolbar_has_prev_next_chapter(self, client):
+        """滚动模式无整页翻页,toolbar 需有上一章/下一章按钮。"""
+        bid = ingest.ingest_file(_first_sample())
+        r = client.get(f"/read/{bid}")
+        html = r.text
+        start = html.find('id="toolbar"')
+        end = html.find("</div>", start)
+        toolbar_block = html[start:end]
+        assert 'id="prev-ch"' in toolbar_block, "#toolbar 应有上一章按钮"
+        assert 'id="next-ch"' in toolbar_block, "#toolbar 应有下一章按钮"
+
+    def test_reader_js_has_chapter_nav(self):
+        """reader.js 应有上下章跳转逻辑:取当前 section index + 找相邻 linear section + goTo。
+
+        scrolled 模式原生滚动只在单章内滚,不自动跨章,靠按钮。
+        当前 section index 取 renderer.getContents()[0].index(内部 #index,直接反映
+        正在渲染的 section,比 relocate 事件存的 currentLocation 更即时——relocate 在
+        scrolled 下由 scroll 事件 250ms debounce 触发,有延迟且首屏前为 null)。
+        """
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
+        # 按钮点击处理
+        assert "prev-ch" in js and "next-ch" in js, \
+            "reader.js 应处理 prev-ch / next-ch 按钮点击"
+        # 当前 section index 取自 getContents(非 currentLocation,理由见 docstring)
+        assert "getContents" in js, "应通过 renderer.getContents() 取当前 section index"
+        assert "goTo" in js, "应用 view.goTo 跳转"
+        # 跳相邻 readable section(linear !== 'no'),与 paginator #adjacentIndex 同逻辑
+        assert "linear" in js and "'no'" in js, "应跳过 linear==='no' 的 section"
+
+
+
 class TestReaderSessionPost:
     """reader.js 关书时应 POST reading-session。
 
