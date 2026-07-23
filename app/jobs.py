@@ -259,14 +259,32 @@ def run_daily_job() -> list[int]:
 
     返回入库的卡片 ID 列表。
     """
+    with db.get_conn() as conn:
+        reading_log_count = conn.execute(
+            """SELECT COUNT(*) FROM reading_log
+               WHERE created_at >= datetime('now', '-1 day')"""
+        ).fetchone()[0]
+        highlight_count = conn.execute(
+            """SELECT COUNT(*) FROM highlights
+               WHERE created_at >= datetime('now', '-1 day')"""
+        ).fetchone()[0]
+    print(
+        "[readflow] daily_cards input: "
+        f"reading_logs={reading_log_count} highlights={highlight_count}"
+    )
+
     # 步骤 1
     try:
         raw_cards = _generate_knowledge_and_blindspots()
     except Exception as e:
-        print(f"[readflow] job step1 failed: {e}")
+        print(f"[readflow] daily_cards failed: step1: {e}")
         return []
 
     if not raw_cards:
+        if reading_log_count == 0 and highlight_count == 0:
+            print("[readflow] daily_cards skipped: no recent reading input")
+        else:
+            print("[readflow] daily_cards failed: step1 produced no cards")
         return []
 
     with db.db() as conn:
@@ -306,7 +324,8 @@ def run_daily_job() -> list[int]:
     try:
         recs = _generate_recommendations(parents)
     except Exception as e:
-        print(f"[readflow] job step2 failed: {e}")
+        print(f"[readflow] daily_cards failed: step2: {e}")
+        print(f"[readflow] daily_cards created: cards={len(ids)}")
         return ids
 
     if recs:
@@ -321,4 +340,5 @@ def run_daily_job() -> list[int]:
                 )
                 ids.append(cur.lastrowid)
 
+    print(f"[readflow] daily_cards created: cards={len(ids)}")
     return ids

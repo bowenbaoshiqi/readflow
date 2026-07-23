@@ -591,15 +591,16 @@ class TestReaderSessionPost:
     """
 
     def test_reader_js_has_session_post(self):
-        """reader.js 应含 /reading-session 端点 URL 和 beforeunload 逻辑。"""
+        """reader.js 应在周期、后台和离页场景可靠提交。"""
         from pathlib import Path
         js = (Path(__file__).resolve().parent.parent / "app" / "static" / "reader.js").read_text()
-        assert "/reading-session" in js, \
-            "reader.js 应含 POST /api/books/{id}/reading-session"
-        assert "start_cfi" in js or "START_CFI" in js, \
-            "reader.js 应记录起始 CFI"
-        assert "beforeunload" in js or "visibilitychange" in js or "pagehide" in js, \
-            "reader.js 应在页面关闭时触发"
+        assert "ReadingSession" in js
+        assert "/reading-session" in js
+        assert "visibilitychange" in js
+        assert "pagehide" in js
+        assert "beforeunload" in js
+        assert "navigator.sendBeacon" in js
+        assert "readingSession.flush" in js
 
 
 class TestHomepageCards:

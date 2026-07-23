@@ -103,6 +103,7 @@ def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(SCHEMA)
         _migrate_add_metadata_columns(conn)
+        _migrate_reading_log_columns(conn)
 
 
 def _migrate_add_metadata_columns(conn) -> None:
@@ -128,6 +129,27 @@ def _migrate_add_metadata_columns(conn) -> None:
     for col, typ in new_cols:
         if col not in existing:
             conn.execute(f"ALTER TABLE books ADD COLUMN {col} {typ}")
+
+
+def _migrate_reading_log_columns(conn: sqlite3.Connection) -> None:
+    """为阅读片段补充幂等键与明确的 spine 区间。"""
+    existing = {
+        row["name"] for row in conn.execute("PRAGMA table_info(reading_log)")
+    }
+    new_cols = [
+        ("session_id", "TEXT"),
+        ("segment_no", "INTEGER"),
+        ("start_spine_index", "INTEGER"),
+        ("end_spine_index", "INTEGER"),
+    ]
+    for col, typ in new_cols:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE reading_log ADD COLUMN {col} {typ}")
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_reading_log_session_segment
+           ON reading_log(session_id, segment_no)
+           WHERE session_id IS NOT NULL AND segment_no IS NOT NULL"""
+    )
 
 
 def get_conn() -> sqlite3.Connection:

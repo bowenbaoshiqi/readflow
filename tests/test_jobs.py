@@ -230,11 +230,28 @@ class TestDailyJobFullFlow:
             count = conn.execute("SELECT COUNT(*) FROM knowledge_cards").fetchone()[0]
         assert count == 20
 
-    def test_full_flow_no_reading_log(self):
+    def test_full_flow_no_reading_log(self, capsys):
         """无 reading_log 时:不生成卡片,不崩溃。"""
         from app.jobs import run_daily_job
+
         ids = run_daily_job()
+        output = capsys.readouterr().out
         assert ids == []
+        assert "[readflow] daily_cards input: reading_logs=0 highlights=0" in output
+        assert "[readflow] daily_cards skipped: no recent reading input" in output
+
+    def test_full_flow_reports_created_count(self, capsys):
+        from app.jobs import run_daily_job
+
+        cards = [{"card_type": "knowledge", "title": "T", "body": "B"}]
+        with patch(
+            "app.jobs._generate_knowledge_and_blindspots",
+            return_value=cards,
+        ), patch("app.jobs._generate_recommendations", return_value=[]):
+            ids = run_daily_job()
+        output = capsys.readouterr().out
+        assert len(ids) == 1
+        assert "[readflow] daily_cards created: cards=1" in output
 
 
 class TestDailyJobRetry:

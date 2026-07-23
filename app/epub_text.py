@@ -3,8 +3,55 @@ from __future__ import annotations
 
 import re
 
-import ebooklib
 from ebooklib import epub
+
+
+class EpubTextError(Exception):
+    """EPUB 正文提取失败。"""
+
+
+class InvalidSpineRange(EpubTextError):
+    """传入的 spine 区间不合法。"""
+
+
+def _html_to_text(content: bytes) -> str:
+    html = content.decode("utf-8", errors="ignore")
+    body = re.search(r"<body[^>]*>(.*?)</body>", html, re.S | re.I)
+    inner = body.group(1) if body else html
+    inner = re.sub(r"<script[^>]*>.*?</script>", "", inner, flags=re.S | re.I)
+    inner = re.sub(r"<style[^>]*>.*?</style>", "", inner, flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", "", inner)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_spine_text(
+    epub_path: str, start_index: int, end_index: int
+) -> str:
+    """按 Foliate 提供的 zero-based spine index 提取章节正文。"""
+    try:
+        book = epub.read_epub(epub_path, options={"ignore_ncx": True})
+    except Exception as exc:
+        raise EpubTextError(f"cannot read epub: {exc}") from exc
+
+    spine = book.spine
+    if start_index < 0 or end_index < 0 or max(start_index, end_index) >= len(spine):
+        raise InvalidSpineRange(
+            f"invalid spine range {start_index}..{end_index} "
+            f"for {len(spine)} items"
+        )
+
+    range_start, range_end = sorted((start_index, end_index))
+    parts = []
+    for item_id, linear in spine[range_start:range_end + 1]:
+        if linear == "no":
+            continue
+        item = book.get_item_with_id(item_id)
+        if item is None:
+            continue
+        text = _html_to_text(item.get_content())
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
 
 
 def extract_text(epub_path: str, start_cfi: str, end_cfi: str) -> str:
@@ -43,15 +90,7 @@ def extract_text(epub_path: str, start_cfi: str, end_cfi: str) -> str:
         item = book.get_item_with_id(item_id)
         if item is None:
             continue
-        content = item.get_content().decode("utf-8", errors="ignore")
-        body = re.search(r"<body[^>]*>(.*?)</body>", content, re.S)
-        inner = body.group(1) if body else content
-        # 去 script/style
-        inner = re.sub(r"<script[^>]*>.*?</script>", "", inner, flags=re.S)
-        inner = re.sub(r"<style[^>]*>.*?</style>", "", inner, flags=re.S)
-        # 去 HTML 标签
-        text = re.sub(r"<[^>]+>", "", inner)
-        text = re.sub(r"\s+", " ", text).strip()
+        text = _html_to_text(item.get_content())
         if text:
             parts.append(text)
 

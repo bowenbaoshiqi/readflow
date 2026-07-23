@@ -6,16 +6,25 @@
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import db
-from ..epub_text import extract_text
+from ..epub_text import (
+    EpubTextError,
+    InvalidSpineRange,
+    extract_spine_text,
+    extract_text,
+)
 
 router = APIRouter(tags=["reader"])
+logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -46,7 +55,7 @@ def reader_page(book_id: int, request: Request):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{row['title']} - 书舟</title>
-<link rel="stylesheet" href="{base}/static/css/reader.css?v=v0.6.7">
+<link rel="stylesheet" href="{base}/static/css/reader.css?v=v2.5.1">
 <script>
 // Kindle(实验性浏览器)不支持 ES module,foliate-js 依赖 module 无法加载。
 // Kindle 重定向到 /read-html/{book_id}(服务端渲染 HTML,Kindle 友好);
@@ -59,7 +68,7 @@ def reader_page(book_id: int, request: Request):
   }}
   var s = document.createElement('script');
   s.type = 'module';
-  s.src = '{base}/static/reader.js?v=v0.6.7';
+  s.src = '{base}/static/reader.js?v=v2.5.1';
   document.head.appendChild(s);
 }})();
 </script>
@@ -416,20 +425,47 @@ def del_highlight(hid: int):
 
 # ---------- 阅读会话日志 ----------
 class ReadingSessionIn(BaseModel):
+    session_id: UUID | None = None
+    segment_no: int | None = Field(default=None, ge=1)
     start_cfi: str
     end_cfi: str
+    start_spine_index: int | None = Field(default=None, ge=0)
+    end_spine_index: int | None = Field(default=None, ge=0)
     percent_from: float
     percent_to: float
 
 
+def _find_reading_segment(session_id: str | None, segment_no: int | None):
+    if session_id is None or segment_no is None:
+        return None
+    with db.get_conn() as conn:
+        return conn.execute(
+            """SELECT id FROM reading_log
+               WHERE session_id=? AND segment_no=?""",
+            (session_id, segment_no),
+        ).fetchone()
+
+
 @router.post("/api/books/{book_id}/reading-session")
 def create_reading_session(book_id: int, body: ReadingSessionIn):
-    """记录一次阅读会话:关书时前端 POST,后端从 epub 提取 CFI 区间纯文本。
-
-    若 start_cfi == end_cfi(未翻页),不存记录,返回 skipped=True。
-    """
+    """幂等记录一段阅读区间，并从 EPUB 提取对应章节正文。"""
     if body.start_cfi == body.end_cfi:
-        return {"ok": True, "skipped": True}
+        return {
+            "ok": True,
+            "status": "skipped",
+            "skipped": True,
+            "reason": "no movement",
+        }
+
+    session_id = str(body.session_id) if body.session_id is not None else None
+    existing = _find_reading_segment(session_id, body.segment_no)
+    if existing:
+        return {"ok": True, "status": "duplicate", "id": existing["id"]}
+
+    has_start_index = body.start_spine_index is not None
+    has_end_index = body.end_spine_index is not None
+    if has_start_index != has_end_index:
+        raise HTTPException(422, "both spine indices are required")
 
     with db.get_conn() as conn:
         row = conn.execute(
@@ -445,17 +481,54 @@ def create_reading_session(book_id: int, body: ReadingSessionIn):
     if not epub_path.is_file():
         raise HTTPException(404, "file missing on disk")
 
-    text = extract_text(str(epub_path), body.start_cfi, body.end_cfi)
-    if not text.strip():
-        return {"ok": True, "skipped": True, "reason": "empty text"}
+    try:
+        if has_start_index:
+            text = extract_spine_text(
+                str(epub_path),
+                body.start_spine_index,
+                body.end_spine_index,
+            )
+        else:
+            text = extract_text(str(epub_path), body.start_cfi, body.end_cfi)
+    except InvalidSpineRange as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except EpubTextError as exc:
+        logger.exception("reading session EPUB extraction failed")
+        raise HTTPException(500, "EPUB text extraction failed") from exc
 
-    with db.db() as conn:
-        cur = conn.execute(
-            """INSERT INTO reading_log(book_id, start_cfi, end_cfi, text,
-               percent_from, percent_to)
-               VALUES(?,?,?,?,?,?)""",
-            (book_id, body.start_cfi, body.end_cfi, text,
-             body.percent_from, body.percent_to),
-        )
-        log_id = cur.lastrowid
-    return {"ok": True, "id": log_id}
+    if not text.strip():
+        return {
+            "ok": True,
+            "status": "skipped",
+            "skipped": True,
+            "reason": "empty text",
+        }
+
+    try:
+        with db.db() as conn:
+            cur = conn.execute(
+                """INSERT INTO reading_log(
+                       book_id, start_cfi, end_cfi, text,
+                       percent_from, percent_to, session_id, segment_no,
+                       start_spine_index, end_spine_index
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    book_id,
+                    body.start_cfi,
+                    body.end_cfi,
+                    text,
+                    body.percent_from,
+                    body.percent_to,
+                    session_id,
+                    body.segment_no,
+                    body.start_spine_index,
+                    body.end_spine_index,
+                ),
+            )
+            log_id = cur.lastrowid
+    except sqlite3.IntegrityError:
+        existing = _find_reading_segment(session_id, body.segment_no)
+        if existing:
+            return {"ok": True, "status": "duplicate", "id": existing["id"]}
+        raise
+    return {"ok": True, "status": "created", "id": log_id}

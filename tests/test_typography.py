@@ -25,7 +25,7 @@ class TestToCss:
         优先级不够会被 epub CSS 盖掉,字号滑块无反应。!important 钉死。
         """
         css = typography.to_css({"fontSize": 20})
-        assert "font-size:20px !important" in css
+        assert "html, body { font-size:20px !important; }" in css
 
     def test_font_family_uses_important_to_override_epub(self):
         """字体 CSS 加 !important,覆盖 epub 自带 font-family。"""
