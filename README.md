@@ -3,7 +3,7 @@
 私人 NAS 阅读服务。把电子书放在自己的硬盘里，用浏览器阅读、记录进度、划线。同一局域网内的手机、平板、Kindle 浏览器都能直接访问。
 
 > v0.4：AI 第二大脑——每日自动从你的阅读中提炼知识卡片、发现知识盲点、推荐补缺书籍。
-> v0.6：阅读器改滚动模式 + 章节导航，手机翻页更顺；镜像已发布 GHCR，群晖 NAS 可直接拉取部署。
+> v2.5：可靠记录阅读日志、修复知识卡片断档与 EPUB 字号覆盖问题；镜像已发布 GHCR，群晖 NAS 可直接拉取部署。
 
 ---
 
@@ -110,7 +110,7 @@ sudo chown -R $USER /volume1/docker/readflow /volume1/books-library
 ```yaml
 services:
   readflow:
-    image: ghcr.io/bowenbaoshiqi/readflow:v0.6
+    image: ghcr.io/bowenbaoshiqi/readflow:v2.5
     container_name: readflow
     restart: unless-stopped
     ports:
@@ -173,7 +173,7 @@ sudo docker compose pull        # 拉新镜像
 sudo docker compose up -d       # 用新镜像重建容器
 ```
 
-> 想固定版本：把 `docker-compose.yml` 里的 `:v0.6` 换成指定 tag（如 `:sha-919b55b`）再 `up -d`，可精确回滚。
+> 想固定版本：把 `docker-compose.yml` 里的 `:v2.5` 换成指定 tag（如 `:sha-<提交号>`）再 `up -d`，可精确回滚。
 
 ### 常见问题
 

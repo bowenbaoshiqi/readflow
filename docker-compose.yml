@@ -19,7 +19,7 @@ services:
   readflow:
     # 默认构建当前主机架构(arm64 NAS / amd64 x86 各自本地构建即可)。
     # 跨架构(如 x86 构给 arm64 NAS)需 buildx + push 到 registry,见 Dockerfile 顶部说明。
-    image: readflow:v0.6
+    image: ghcr.io/bowenbaoshiqi/readflow:v2.5
     build:
       context: .
       dockerfile: Dockerfile

@@ -54,7 +54,7 @@ def to_css(settings: dict) -> str:
         font-family: '{font["family"]}';
         src: url('{font["file"]}') format('{font["format"]}');
     }}
-    html {{ font-size:{font_size}px !important; }}
+    html, body {{ font-size:{font_size}px !important; }}
     body {{ font-family: '{font["family"]}' !important; }}
     p, li, blockquote, dd {{
         line-height: {spacing} !important;

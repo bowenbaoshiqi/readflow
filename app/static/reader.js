@@ -3,6 +3,7 @@
  * 配置从 #viewer 的 data-* 属性读取,避免多 module script 的执行顺序问题。
  */
 import { Overlayer } from './foliate-js/overlayer.js'
+import { ReadingSession, normalizeRelocation } from './reading-session.js'
 import './foliate-js/view.js'
 
 const viewer = document.getElementById('viewer')
@@ -13,12 +14,36 @@ const view = document.createElement('foliate-view')
 viewer.append(view)
 
 let currentLocation = null  // relocate 事件的 detail
+let sessionReady = false
 
-// ---- 阅读会话:记录起止 CFI,关书时 POST reading-session ----
-let sessionStartCFI = null
-let sessionEndCFI = null
-let sessionPercentFrom = null
-let sessionPercentTo = null
+async function sendReadingSegment(payload, lifecycle = false) {
+  const url = `${BASE}/api/books/${BOOK_ID}/reading-session`
+  const body = JSON.stringify(payload)
+  if (lifecycle && navigator.sendBeacon) {
+    return navigator.sendBeacon(
+      url,
+      new Blob([body], { type: 'application/json' }),
+    )
+  }
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      keepalive: lifecycle,
+    })
+    if (!response.ok) {
+      console.warn('[readflow] reading session failed', response.status)
+      return false
+    }
+    return true
+  } catch (error) {
+    console.warn('[readflow] reading session failed', error)
+    return false
+  }
+}
+
+const readingSession = new ReadingSession({ send: sendReadingSegment })
 
 // ---- 打开书籍 + 恢复进度 + 渲染已有划线 ----
 async function init() {
@@ -47,6 +72,11 @@ async function init() {
     try { await view.addAnnotation({ value: h.start_cfi, color: h.color, note: h.text }) }
     catch (e) { console.warn('[readflow] highlight load failed', e) }
   }
+  sessionReady = true
+  if (currentLocation) {
+    await readingSession.relocate(currentLocation)
+  }
+  readingSession.start()
   console.log('[readflow] init done')
 }
 
@@ -58,15 +88,11 @@ view.addEventListener('draw-annotation', e => {
 
 // ---- 位置变化 → 存进度 ----
 view.addEventListener('relocate', e => {
-  const { cfi, fraction, index } = e.detail
-  currentLocation = e.detail
-  // 记录会话起止 CFI
-  if (sessionStartCFI === null) {
-    sessionStartCFI = cfi
-    sessionPercentFrom = fraction || 0
+  const { cfi, fraction, index } = normalizeRelocation(e.detail)
+  currentLocation = { cfi, fraction, index }
+  if (sessionReady) {
+    readingSession.relocate(currentLocation)
   }
-  sessionEndCFI = cfi
-  sessionPercentTo = fraction || 0
   document.getElementById('progress').textContent = `${Math.round((fraction || 0) * 100)}%`
   fetch(`${BASE}/api/books/${BOOK_ID}/progress`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -164,7 +190,10 @@ document.getElementById('toolbar').addEventListener('click', async (ev) => {
   }
 })
 
-document.getElementById('back').onclick = () => location.href = '/'
+document.getElementById('back').onclick = async () => {
+  await readingSession.flush()
+  location.href = '/'
+}
 document.getElementById('toc-btn').onclick = async () => {
   // 简单目录:弹出章节列表
   const toc = view.book?.toc || []
@@ -213,23 +242,18 @@ init().catch(e => {
   document.getElementById('viewer').append(d)
 })
 
-// ---- 关书:POST reading-session ----
-async function postReadingSession() {
-  if (!sessionStartCFI || sessionStartCFI === sessionEndCFI) return
-  try {
-    await fetch(`${BASE}/api/books/${BOOK_ID}/reading-session`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        start_cfi: sessionStartCFI,
-        end_cfi: sessionEndCFI,
-        percent_from: sessionPercentFrom,
-        percent_to: sessionPercentTo,
-      }),
-      keepalive: true,
-    })
-  } catch {}
-}
-window.addEventListener('beforeunload', postReadingSession)
+// ---- 后台/离页:立即持久化尚未提交的阅读片段 ----
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    readingSession.flush({ lifecycle: true })
+  }
+})
+window.addEventListener('pagehide', () => {
+  readingSession.flush({ lifecycle: true })
+})
+window.addEventListener('beforeunload', () => {
+  readingSession.flush({ lifecycle: true })
+})
 
 // ---- 排版设置:面板 + foliate setStyles 注入 + localStorage 持久化 ----
 const TYPO_KEY = 'readflow:typography'
