@@ -1,9 +1,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  createSessionId,
   ReadingSession,
   normalizeRelocation,
 } from '../../app/static/reading-session.js'
+
+test('creates a valid UUID when randomUUID is unavailable over HTTP', () => {
+  const cryptoWithoutRandomUUID = {
+    getRandomValues(bytes) {
+      bytes.fill(0)
+      return bytes
+    },
+  }
+  assert.equal(
+    createSessionId(cryptoWithoutRandomUUID),
+    '00000000-0000-4000-8000-000000000000',
+  )
+})
 
 test('uses Foliate section.current as the spine index', () => {
   assert.deepEqual(

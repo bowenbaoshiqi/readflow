@@ -55,7 +55,7 @@ def reader_page(book_id: int, request: Request):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{row['title']} - 书舟</title>
-<link rel="stylesheet" href="{base}/static/css/reader.css?v=v2.5.0">
+<link rel="stylesheet" href="{base}/static/css/reader.css?v=v2.5.1">
 <script>
 // Kindle(实验性浏览器)不支持 ES module,foliate-js 依赖 module 无法加载。
 // Kindle 重定向到 /read-html/{book_id}(服务端渲染 HTML,Kindle 友好);
@@ -68,7 +68,7 @@ def reader_page(book_id: int, request: Request):
   }}
   var s = document.createElement('script');
   s.type = 'module';
-  s.src = '{base}/static/reader.js?v=v2.5.0';
+  s.src = '{base}/static/reader.js?v=v2.5.1';
   document.head.appendChild(s);
 }})();
 </script>

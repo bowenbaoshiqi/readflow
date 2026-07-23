@@ -25,13 +25,14 @@ Source plan: `docs/superpowers/plans/2026-07-23-reliable-reading-log.md`
 | Foliate chapter identity | Node suite failed because `normalizeRelocation` was missing | Node suite: 8 passed | Foliate's `section.current` is persisted as the real spine index instead of silently using chapter zero |
 | Backward reading | Target API test returned 422 | Reading-log and typography target: 40 passed | Reading toward an earlier chapter is accepted and text is extracted across the covered range |
 | EPUB-owned body font size | Typography target failed because only `html` received the override | Typography target: 23 passed | A book-level `body { font-size: ... }` rule cannot override the user's selected font size |
+| NAS HTTP compatibility | Node suite failed because `createSessionId` was missing | Node suite: 9 passed | Reading sessions receive a valid UUID even when `crypto.randomUUID()` is unavailable on an HTTP IP origin |
 
 ## Full verification
 
 - `.venv/bin/pytest -q` outside the socket-restricted sandbox:
   `233 passed, 12 skipped, 1 warning`.
 - `node --test tests/js/reading-session.test.mjs`:
-  `8 passed, 0 failed`.
+  `9 passed, 0 failed`.
 - `uv run pytest --cov=app --cov-report=term -q`:
   `233 passed, 12 skipped`; total Python coverage `87%`.
 - `node --check app/static/reading-session.js`: passed.
@@ -45,7 +46,7 @@ Source plan: `docs/superpowers/plans/2026-07-23-reliable-reading-log.md`
 ## Coverage and known gaps
 
 The Python application exceeds the required 80% threshold at 87%. Browser
-session behavior is covered separately by eight deterministic Node tests, while
+session behavior is covered separately by nine deterministic Node tests, while
 the existing Playwright typography/reader suite passed in the full regression.
 
 The 12 skipped tests depend on optional sample EPUB fixtures already absent
